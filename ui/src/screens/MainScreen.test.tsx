@@ -98,7 +98,7 @@ beforeEach(() => {
       case 'config_get_transmit_channels':
         return 1;
       case 'config_get_effective_server_url':
-        return 'wss://example.invalid';
+        return 'test-server';
       case 'signaling_get_chat_messages':
         return [];
       default:
