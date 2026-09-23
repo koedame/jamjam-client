@@ -1,0 +1,797 @@
+//! Signaling client and the messages it exchanges with the signaling server
+//!
+//! Handles room creation, peer discovery, and connection coordination.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+use super::device_identity::DeviceIdentity;
+use super::discovery::discover_signaling_url;
+use super::error::NetworkError;
+
+/// Current Unix time in whole seconds, the timestamp a device identity signs
+/// when connecting.
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Maximum peers per room
+pub const MAX_PEERS_PER_ROOM: usize = 10;
+
+/// WebSocket handshake headers carrying a client's device identity
+/// (ADR-024). [`SignalingClient::connect`] always sends all four: the server
+/// refuses a connection without them.
+pub const DEVICE_ID_HEADER: &str = "x-device-id";
+pub const DEVICE_PUBKEY_HEADER: &str = "x-device-pubkey";
+pub const DEVICE_SIGNATURE_HEADER: &str = "x-device-signature";
+pub const DEVICE_TIMESTAMP_HEADER: &str = "x-device-timestamp";
+
+/// Address candidate type for ICE-like connection establishment
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CandidateType {
+    /// Local address (highest priority for same network)
+    Host,
+    /// Server reflexive address (public IP via STUN)
+    ServerReflexive,
+}
+
+/// A single address candidate for connection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressCandidate {
+    /// The socket address
+    pub address: SocketAddr,
+    /// Type of candidate
+    pub candidate_type: CandidateType,
+    /// Priority (higher = better, RFC 5245 style)
+    pub priority: u32,
+}
+
+impl AddressCandidate {
+    /// Create a new host candidate
+    pub fn host(address: SocketAddr) -> Self {
+        // Host candidates have high priority
+        // IPv6 gets slightly higher priority than IPv4 (Happy Eyeballs)
+        let type_pref: u32 = 126; // Host type preference
+        let local_pref: u32 = if address.is_ipv6() { 65535 } else { 65534 };
+        let priority = (type_pref << 24) | (local_pref << 8) | 255;
+
+        Self {
+            address,
+            candidate_type: CandidateType::Host,
+            priority,
+        }
+    }
+
+    /// Create a new server reflexive candidate (from STUN)
+    pub fn server_reflexive(address: SocketAddr) -> Self {
+        // Server reflexive has lower priority than host
+        let type_pref: u32 = 100;
+        let local_pref: u32 = if address.is_ipv6() { 65535 } else { 65534 };
+        let priority = (type_pref << 24) | (local_pref << 8) | 255;
+
+        Self {
+            address,
+            candidate_type: CandidateType::ServerReflexive,
+            priority,
+        }
+    }
+}
+
+/// Peer information with multiple address candidates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub id: Uuid,
+    pub name: String,
+    /// All address candidates for this peer (sorted by priority)
+    #[serde(default)]
+    pub candidates: Vec<AddressCandidate>,
+    /// Legacy: single public address (for backward compatibility)
+    #[serde(default)]
+    pub public_addr: Option<SocketAddr>,
+    /// Legacy: single local address (for backward compatibility)
+    #[serde(default)]
+    pub local_addr: Option<SocketAddr>,
+    /// Unix timestamp (seconds) when this peer joined the room.
+    /// Defaults to 0 for older clients/fixtures that predate this field.
+    #[serde(default)]
+    pub joined_at: u64,
+}
+
+impl PeerInfo {
+    /// Get all candidate addresses sorted by priority (highest first)
+    pub fn get_sorted_candidates(&self) -> Vec<SocketAddr> {
+        let mut candidates = self.candidates.clone();
+        candidates.sort_by_key(|c| std::cmp::Reverse(c.priority));
+
+        let mut addrs: Vec<SocketAddr> = candidates.into_iter().map(|c| c.address).collect();
+
+        // Include legacy addresses if not already present
+        if let Some(addr) = self.public_addr {
+            if !addrs.contains(&addr) {
+                addrs.push(addr);
+            }
+        }
+        if let Some(addr) = self.local_addr {
+            if !addrs.contains(&addr) {
+                addrs.push(addr);
+            }
+        }
+
+        addrs
+    }
+}
+
+/// Room information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomInfo {
+    pub id: String,
+    pub name: String,
+    pub peer_count: usize,
+    pub max_peers: usize,
+    pub has_password: bool,
+    /// 6-character invite code for easy room sharing
+    pub invite_code: String,
+    /// True for the room the server offers for trying a connection. The app
+    /// shows a shortcut into it only when the server lists one, so which room
+    /// that is - and whether there is one at all - is the server's to decide.
+    ///
+    /// Defaulted so a list from a server that predates this field parses, as
+    /// a list with no such room.
+    #[serde(default)]
+    pub test_room: bool,
+}
+
+/// Signaling message types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum SignalingMessage {
+    // Client -> Server
+    CreateRoom {
+        room_name: String,
+        password: Option<String>,
+        peer_name: String,
+    },
+    JoinRoom {
+        room_id: String,
+        password: Option<String>,
+        peer_name: String,
+    },
+    LeaveRoom,
+    /// Update peer connection information with multiple candidates
+    UpdatePeerInfo {
+        /// All address candidates (preferred)
+        #[serde(default)]
+        candidates: Vec<AddressCandidate>,
+        /// Legacy: single public address
+        #[serde(default)]
+        public_addr: Option<SocketAddr>,
+        /// Legacy: single local address
+        #[serde(default)]
+        local_addr: Option<SocketAddr>,
+    },
+    ListRooms,
+
+    // Server -> Client
+    RoomCreated {
+        room_id: String,
+        peer_id: Uuid,
+        /// 6-character invite code for easy room sharing
+        invite_code: String,
+    },
+    RoomJoined {
+        room_id: String,
+        peer_id: Uuid,
+        /// The room's invite code, so every participant can share the room -
+        /// not just whoever created it. Without it a client has nothing to
+        /// show but the room's UUID, which is not a code anyone can join with.
+        ///
+        /// Defaulted so a client still parses the reply from a server that
+        /// predates this field; it then has no code to show, rather than
+        /// failing the join outright.
+        #[serde(default)]
+        invite_code: String,
+        peers: Vec<PeerInfo>,
+    },
+    PeerJoined {
+        peer: PeerInfo,
+    },
+    PeerLeft {
+        peer_id: Uuid,
+    },
+    PeerUpdated {
+        peer: PeerInfo,
+    },
+    RoomList {
+        rooms: Vec<RoomInfo>,
+    },
+    Error {
+        message: String,
+    },
+    /// Sent to every peer in a room the server has closed. Each client should
+    /// treat this as an immediate disconnect.
+    RoomClosed {
+        reason: String,
+    },
+    /// Broadcast room-wide when the server removes one peer from the room;
+    /// only the client whose `peer_id` matches should disconnect, other
+    /// clients in the room should ignore it.
+    Kicked {
+        peer_id: Uuid,
+        reason: String,
+    },
+
+    // Chat messages
+    /// Send a chat message to the room
+    ChatMessage {
+        sender_id: String,
+        sender_name: String,
+        content: String,
+        timestamp: u64,
+    },
+}
+
+/// Rustls 0.23 requires exactly one process-wide default `CryptoProvider`
+/// and refuses to auto-select one when more than one crypto backend crate
+/// is linked in. Rather than depend on which backends happen to be linked
+/// into a given binary, every TLS entry point (such as
+/// [`SignalingClient::connect`]) installs the provider explicitly before
+/// first use. `Once`-guarded so calling it from multiple entry points in the
+/// same process is harmless.
+pub fn ensure_crypto_provider_installed() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
+/// Characters used for invite code generation.
+/// Excludes visually confusing characters: 0, O, I, 1, L
+const INVITE_CODE_CHARS: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+/// Length of invite codes
+const INVITE_CODE_LENGTH: usize = 6;
+
+/// Generate a 6-character invite code using readable characters.
+/// Uses characters A-H, J-N, P-Z, 2-9 (excludes 0, O, I, 1, L for readability).
+pub fn generate_invite_code() -> String {
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    (0..INVITE_CODE_LENGTH)
+        .map(|_| {
+            let idx = rng.random_range(0..INVITE_CODE_CHARS.len());
+            INVITE_CODE_CHARS[idx] as char
+        })
+        .collect()
+}
+
+/// Check if a string matches the invite code format (6 uppercase alphanumeric characters).
+pub fn is_invite_code_format(s: &str) -> bool {
+    s.len() == INVITE_CODE_LENGTH && s.chars().all(|c| INVITE_CODE_CHARS.contains(&(c as u8)))
+}
+
+/// URL scheme used by invite links (`jamjam://join/ABC123`)
+pub const INVITE_URL_SCHEME: &str = "jamjam";
+
+/// Path segment that identifies a join link
+const INVITE_URL_PATH: &str = "join";
+
+/// Build the invite URL for a room code (REQ-CON-101)
+///
+/// ```
+/// use jamjam::network::invite_url;
+/// assert_eq!(invite_url("ABC234"), "jamjam://join/ABC234");
+/// ```
+pub fn invite_url(invite_code: &str) -> String {
+    format!(
+        "{}://{}/{}",
+        INVITE_URL_SCHEME, INVITE_URL_PATH, invite_code
+    )
+}
+
+/// Extract the invite code from an invite URL (REQ-CON-103)
+///
+/// Returns `None` unless the URL uses the `jamjam` scheme, names the `join`
+/// path, and carries a code that passes [`is_invite_code_format`]. Rejecting a
+/// malformed code here means the join attempt fails locally with a clear cause
+/// rather than as a "room not found" from the server.
+///
+/// The code is upper-cased first, so a link that has been lower-cased in transit
+/// still works. Nothing else about the input is normalised.
+///
+/// ```
+/// use jamjam::network::parse_invite_url;
+/// assert_eq!(parse_invite_url("jamjam://join/ABC234"), Some("ABC234".to_string()));
+/// assert_eq!(parse_invite_url("https://example.com/join/ABC234"), None);
+/// ```
+pub fn parse_invite_url(url: &str) -> Option<String> {
+    let prefix = format!("{}://{}/", INVITE_URL_SCHEME, INVITE_URL_PATH);
+    let rest = url.trim().strip_prefix(&prefix)?;
+
+    // Tolerate a trailing slash or query string, but nothing further down a path:
+    // `jamjam://join/ABC234/extra` is not a code this function should guess at.
+    let code = rest
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('/');
+    if code.contains('/') {
+        return None;
+    }
+
+    let code = code.to_ascii_uppercase();
+    if is_invite_code_format(&code) {
+        Some(code)
+    } else {
+        None
+    }
+}
+
+/// Signaling client for connecting to a signaling server
+///
+/// Knows the jamjam server, not the signaling server: [`Self::connect`] asks
+/// the server where its signaling is (`GET /api/v1/signaling`) and connects
+/// there, proving the device identity (ADR-024). There is no anonymous
+/// connection.
+pub struct SignalingClient {
+    server_url: String,
+    device_identity: Arc<DeviceIdentity>,
+}
+
+impl SignalingClient {
+    /// A client for the jamjam server at `server_url` (`http://` or
+    /// `https://`), connecting as `device_identity`.
+    pub fn new(server_url: &str, device_identity: Arc<DeviceIdentity>) -> Self {
+        ensure_crypto_provider_installed();
+        Self {
+            server_url: server_url.to_string(),
+            device_identity,
+        }
+    }
+
+    /// The jamjam server this client asks for the signaling server.
+    pub fn server_url(&self) -> &str {
+        &self.server_url
+    }
+
+    /// Asks the server where its signaling is, then connects there with the
+    /// four `X-Device-*` headers on the handshake.
+    pub async fn connect(&self) -> Result<SignalingConnection, NetworkError> {
+        let signaling_url = discover_signaling_url(&self.server_url).await?;
+        let mut request = signaling_url
+            .as_str()
+            .into_client_request()
+            .map_err(|e| NetworkError::SignalingError(format!("Invalid signaling URL: {}", e)))?;
+        let identity = &self.device_identity;
+        let timestamp = now_unix_secs() as i64;
+        let headers = [
+            (DEVICE_ID_HEADER, identity.device_id().to_string()),
+            (DEVICE_PUBKEY_HEADER, identity.public_key_b64()),
+            (DEVICE_SIGNATURE_HEADER, identity.sign_timestamp(timestamp)),
+            (DEVICE_TIMESTAMP_HEADER, timestamp.to_string()),
+        ];
+        for (name, value) in headers {
+            let header_value = value.parse().map_err(|e| {
+                NetworkError::SignalingError(format!("Invalid {} header: {}", name, e))
+            })?;
+            request.headers_mut().insert(name, header_value);
+        }
+        let (ws_stream, _) = connect_async(request)
+            .await
+            .map_err(|e| NetworkError::SignalingError(format!("Connect failed: {}", e)))?;
+
+        debug!("Connected to signaling server: {}", signaling_url);
+
+        Ok(SignalingConnection { ws_stream })
+    }
+}
+
+/// An active connection to the signaling server
+pub struct SignalingConnection {
+    ws_stream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+}
+
+impl SignalingConnection {
+    /// Send a message to the server
+    pub async fn send(&mut self, msg: SignalingMessage) -> Result<(), NetworkError> {
+        let json = serde_json::to_string(&msg)
+            .map_err(|e| NetworkError::SignalingError(format!("Serialize failed: {}", e)))?;
+
+        self.ws_stream
+            .send(Message::Text(json.into()))
+            .await
+            .map_err(|e| NetworkError::SignalingError(format!("Send failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Send a WebSocket ping frame. `recv()` only puts bytes on the wire when
+    /// there is a message to relay, so a client that is merely listening
+    /// (connected to the server but not yet in a room, or in a quiet room)
+    /// can go silent long enough to hit an edge/proxy idle timeout. The host
+    /// calls this on a timer to keep the connection alive regardless of
+    /// application traffic.
+    pub async fn send_ping(&mut self) -> Result<(), NetworkError> {
+        self.ws_stream
+            .send(Message::Ping(Vec::new().into()))
+            .await
+            .map_err(|e| NetworkError::SignalingError(format!("Ping failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Receive a message from the server
+    pub async fn recv(&mut self) -> Result<SignalingMessage, NetworkError> {
+        loop {
+            match self.ws_stream.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    return serde_json::from_str(&text).map_err(|e| {
+                        NetworkError::SignalingError(format!("Deserialize failed: {}", e))
+                    });
+                }
+                Some(Ok(Message::Close(_))) | None => {
+                    return Err(NetworkError::ConnectionClosed);
+                }
+                Some(Err(e)) => {
+                    return Err(NetworkError::SignalingError(format!(
+                        "Receive failed: {}",
+                        e
+                    )));
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// Close the connection
+    pub async fn close(mut self) -> Result<(), NetworkError> {
+        self.ws_stream
+            .close(None)
+            .await
+            .map_err(|e| NetworkError::SignalingError(format!("Close failed: {}", e)))?;
+        Ok(())
+    }
+}
+
+/// Gather all address candidates for the local peer
+///
+/// This function collects:
+/// 1. Local host addresses of the interfaces that `audio_socket`'s address
+///    family can use, each with the socket's port
+/// 2. The server reflexive address via STUN (public IP/port mapping)
+///
+/// STUN is asked through `audio_socket` itself. The mapping a NAT creates is
+/// per source socket, and NATs that renumber ports give a different socket a
+/// different port, so a query from any other socket would advertise a port
+/// nothing is mapped to. The reflexive candidate is exactly what the STUN
+/// server saw, port included.
+///
+/// The socket must not be reading for anything else while this runs: the
+/// reply arrives on it. Call it before the connection starts receiving.
+///
+/// Candidates are returned sorted by priority (highest first).
+pub async fn gather_candidates(audio_socket: &Arc<tokio::net::UdpSocket>) -> Vec<AddressCandidate> {
+    gather_candidates_using(audio_socket, super::stun::DEFAULT_STUN_SERVERS).await
+}
+
+/// [`gather_candidates`] with an explicit STUN server list.
+pub async fn gather_candidates_using(
+    audio_socket: &Arc<tokio::net::UdpSocket>,
+    stun_servers: &[&str],
+) -> Vec<AddressCandidate> {
+    let mut candidates = Vec::new();
+
+    let local_addr = match audio_socket.local_addr() {
+        Ok(addr) => addr,
+        Err(e) => {
+            warn!("Audio socket has no local address: {}", e);
+            return candidates;
+        }
+    };
+
+    candidates.extend(gather_host_candidates(local_addr.port()));
+    // Only the socket's own family can be used to reach it.
+    candidates.retain(|c| c.address.is_ipv4() == local_addr.is_ipv4());
+
+    let stun = super::stun::StunClient::new(audio_socket.clone());
+    match stun.discover_public_address_from(stun_servers).await {
+        Ok(result) => {
+            let addr = result.mapped_address;
+            candidates.push(AddressCandidate::server_reflexive(addr));
+            info!("Added server reflexive candidate: {}", addr);
+        }
+        Err(e) => warn!("No server reflexive candidate: {}", e),
+    }
+
+    // Sort by priority (highest first)
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.priority));
+
+    // Remove duplicates (same address)
+    candidates.dedup_by(|a, b| a.address == b.address);
+
+    info!("Gathered {} address candidates", candidates.len());
+    candidates
+}
+
+/// Host candidates: every non-loopback interface address, at `local_port`.
+///
+/// Needs no STUN, so it is all that can be offered when the audio socket is
+/// not available to ask through.
+pub fn gather_host_candidates(local_port: u16) -> Vec<AddressCandidate> {
+    let mut candidates = Vec::new();
+    if let Ok(addrs) = local_ip_address::list_afinet_netifas() {
+        for (_, ip) in addrs {
+            // Skip loopback addresses
+            if ip.is_loopback() {
+                continue;
+            }
+
+            let addr = SocketAddr::new(ip, local_port);
+            candidates.push(AddressCandidate::host(addr));
+            debug!("Added host candidate: {}", addr);
+        }
+    }
+    candidates
+}
+
+/// Get sorted addresses from candidates for connection attempts
+pub fn candidates_to_addrs(candidates: &[AddressCandidate]) -> Vec<SocketAddr> {
+    candidates.iter().map(|c| c.address).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_room_list_from_a_server_that_marks_no_test_room_parses_with_none_marked() {
+        let json = r#"{"type":"RoomList","data":{"rooms":[{"id":"r1","name":"Jam","peer_count":1,"max_peers":10,"has_password":false,"invite_code":"ABC234"}]}}"#;
+
+        let SignalingMessage::RoomList { rooms } = serde_json::from_str(json).unwrap() else {
+            panic!("not a RoomList");
+        };
+        assert!(!rooms[0].test_room);
+    }
+
+    #[test]
+    fn a_room_the_server_marks_as_its_test_room_parses_as_one() {
+        let json = r#"{"type":"RoomList","data":{"rooms":[{"id":"r1","name":"Test Room","peer_count":0,"max_peers":10,"has_password":false,"invite_code":"ABC234","test_room":true}]}}"#;
+
+        let SignalingMessage::RoomList { rooms } = serde_json::from_str(json).unwrap() else {
+            panic!("not a RoomList");
+        };
+        assert!(rooms[0].test_room);
+        assert_eq!(rooms[0].invite_code, "ABC234");
+    }
+
+    #[test]
+    fn test_signaling_message_serialize() {
+        let msg = SignalingMessage::CreateRoom {
+            room_name: "Test Room".to_string(),
+            password: None,
+            peer_name: "Alice".to_string(),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: SignalingMessage = serde_json::from_str(&json).unwrap();
+
+        match parsed {
+            SignalingMessage::CreateRoom {
+                room_name,
+                password,
+                peer_name,
+            } => {
+                assert_eq!(room_name, "Test Room");
+                assert!(password.is_none());
+                assert_eq!(peer_name, "Alice");
+            }
+            _ => panic!("Wrong message type"),
+        }
+    }
+
+    /// Verifies: REQ-CON-021
+    #[test]
+    fn test_generate_invite_code_length() {
+        let code = generate_invite_code();
+        assert_eq!(code.len(), INVITE_CODE_LENGTH);
+        assert!(
+            is_invite_code_format(&code),
+            "{:?} fails the format check",
+            code
+        );
+    }
+
+    #[test]
+    fn test_generate_invite_code_valid_chars() {
+        // Generate multiple codes to test character validity
+        for _ in 0..100 {
+            let code = generate_invite_code();
+            for c in code.chars() {
+                assert!(
+                    INVITE_CODE_CHARS.contains(&(c as u8)),
+                    "Invalid character '{}' in invite code",
+                    c
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_generate_invite_code_excludes_confusing_chars() {
+        // Generate many codes and verify excluded characters never appear
+        let excluded_chars = ['0', 'O', 'I', '1', 'L'];
+        for _ in 0..1000 {
+            let code = generate_invite_code();
+            for c in excluded_chars {
+                assert!(
+                    !code.contains(c),
+                    "Invite code '{}' contains excluded character '{}'",
+                    code,
+                    c
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_generate_invite_code_uniqueness() {
+        // Generate codes and check for uniqueness (probabilistic test)
+        // Using 100 samples to minimize collision probability (~1/100,000)
+        // while still validating the randomness of the generator
+        use std::collections::HashSet;
+        let mut codes = HashSet::new();
+        for _ in 0..100 {
+            let code = generate_invite_code();
+            codes.insert(code);
+        }
+        // With 29^6 possible codes (~594M), 100 codes should all be unique
+        assert_eq!(codes.len(), 100);
+    }
+
+    #[test]
+    fn test_is_invite_code_format_valid() {
+        assert!(is_invite_code_format("ABC234"));
+        assert!(is_invite_code_format("HJKMNP"));
+        assert!(is_invite_code_format("QRSTUV"));
+        assert!(is_invite_code_format("WXY789"));
+    }
+
+    #[test]
+    fn test_is_invite_code_format_invalid_length() {
+        assert!(!is_invite_code_format("ABC23")); // Too short
+        assert!(!is_invite_code_format("ABC2345")); // Too long
+        assert!(!is_invite_code_format("")); // Empty
+    }
+
+    #[test]
+    fn test_is_invite_code_format_invalid_chars() {
+        assert!(!is_invite_code_format("ABC230")); // Contains '0'
+        assert!(!is_invite_code_format("ABCDE1")); // Contains '1'
+        assert!(!is_invite_code_format("ABCDEO")); // Contains 'O'
+        assert!(!is_invite_code_format("ABCDEI")); // Contains 'I'
+        assert!(!is_invite_code_format("ABCDEL")); // Contains 'L'
+        assert!(!is_invite_code_format("abc234")); // Lowercase
+    }
+
+    #[test]
+    fn test_is_invite_code_format_uuid_like_strings() {
+        // UUID-like strings should not match invite code format
+        assert!(!is_invite_code_format("a1b2c3d4")); // 8-char UUID prefix
+        assert!(!is_invite_code_format("a1b2c3d4-e5f6"));
+    }
+
+    #[test]
+    fn test_address_candidate_host_ipv4() {
+        let addr: std::net::SocketAddr = "192.168.1.100:5000".parse().unwrap();
+        let candidate = AddressCandidate::host(addr);
+
+        assert_eq!(candidate.address, addr);
+        assert_eq!(candidate.candidate_type, CandidateType::Host);
+        // Host type preference = 126, local_pref for IPv4 = 65534
+        assert!(candidate.priority > 0);
+    }
+
+    #[test]
+    fn test_address_candidate_host_ipv6() {
+        let addr: std::net::SocketAddr = "[::1]:5000".parse().unwrap();
+        let candidate = AddressCandidate::host(addr);
+
+        assert_eq!(candidate.address, addr);
+        assert_eq!(candidate.candidate_type, CandidateType::Host);
+        assert!(candidate.priority > 0);
+    }
+
+    #[test]
+    fn test_address_candidate_server_reflexive() {
+        let addr: std::net::SocketAddr = "203.0.113.50:5000".parse().unwrap();
+        let candidate = AddressCandidate::server_reflexive(addr);
+
+        assert_eq!(candidate.address, addr);
+        assert_eq!(candidate.candidate_type, CandidateType::ServerReflexive);
+        assert!(candidate.priority > 0);
+    }
+
+    #[test]
+    fn test_address_candidate_priority_ordering() {
+        // Host candidates should have higher priority than server reflexive
+        let host_v4 = AddressCandidate::host("192.168.1.100:5000".parse().unwrap());
+        let host_v6 = AddressCandidate::host("[2001:db8::1]:5000".parse().unwrap());
+        let srflx_v4 = AddressCandidate::server_reflexive("203.0.113.50:5000".parse().unwrap());
+        let srflx_v6 = AddressCandidate::server_reflexive("[2001:db8::2]:5000".parse().unwrap());
+
+        // Host > ServerReflexive
+        assert!(host_v4.priority > srflx_v4.priority);
+        assert!(host_v6.priority > srflx_v6.priority);
+
+        // IPv6 slightly higher than IPv4 within same type
+        assert!(host_v6.priority > host_v4.priority);
+        assert!(srflx_v6.priority > srflx_v4.priority);
+    }
+
+    #[test]
+    fn test_candidates_to_addrs() {
+        let candidates = vec![
+            AddressCandidate::host("192.168.1.100:5000".parse().unwrap()),
+            AddressCandidate::server_reflexive("203.0.113.50:5000".parse().unwrap()),
+        ];
+
+        let addrs = candidates_to_addrs(&candidates);
+
+        assert_eq!(addrs.len(), 2);
+        assert_eq!(addrs[0], "192.168.1.100:5000".parse().unwrap());
+        assert_eq!(addrs[1], "203.0.113.50:5000".parse().unwrap());
+    }
+
+    #[test]
+    fn test_candidates_to_addrs_empty() {
+        let candidates: Vec<AddressCandidate> = vec![];
+        let addrs = candidates_to_addrs(&candidates);
+        assert!(addrs.is_empty());
+    }
+
+    #[test]
+    fn test_peer_info_with_candidates() {
+        let peer = PeerInfo {
+            id: uuid::Uuid::new_v4(),
+            name: "TestPeer".to_string(),
+            candidates: vec![AddressCandidate::host(
+                "192.168.1.100:5000".parse().unwrap(),
+            )],
+            public_addr: None,
+            local_addr: None,
+            joined_at: 0,
+        };
+
+        assert_eq!(peer.candidates.len(), 1);
+        assert_eq!(peer.candidates[0].candidate_type, CandidateType::Host);
+    }
+
+    #[test]
+    fn test_peer_info_backward_compatible_serialization() {
+        // Test that PeerInfo can be deserialized without candidates field (backward compat)
+        let json = r#"{"id":"550e8400-e29b-41d4-a716-446655440000","name":"OldPeer","public_addr":"192.168.1.1:5000","local_addr":"192.168.1.1:5000"}"#;
+        let peer: PeerInfo = serde_json::from_str(json).unwrap();
+
+        assert_eq!(peer.name, "OldPeer");
+        assert!(peer.candidates.is_empty()); // Default empty
+        assert!(peer.public_addr.is_some());
+    }
+
+    #[test]
+    fn test_peer_info_joined_at_defaults_to_zero_when_absent() {
+        let json = r#"{"id":"550e8400-e29b-41d4-a716-446655440000","name":"OldPeer"}"#;
+        let peer: PeerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(peer.joined_at, 0);
+    }
+}

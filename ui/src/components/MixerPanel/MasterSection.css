@@ -1,0 +1,103 @@
+/**
+ * MasterSection styles
+ * jamjam brand (ui.pen Molecules/Meter/MasterHorizontal): recessed near-black
+ * card with a title/dB header and two horizontal L/R level bars.
+ */
+
+.master-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  background: var(--color-bg-tertiary);
+  border: 2px solid var(--color-border);
+}
+
+.master-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.master-section__title {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.master-section__db {
+  font-size: 10px;
+  font-family: var(--font-family-mono);
+  color: var(--color-text-secondary);
+}
+
+.master-section__meters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.master-section__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.master-section__label {
+  font-size: 10px;
+  font-family: var(--font-family-mono);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-secondary);
+  width: 8px;
+  text-align: center;
+}
+
+.master-section__bar {
+  position: relative;
+  flex: 1;
+  height: 10px;
+  overflow: hidden;
+  background: var(--color-bg-secondary);
+}
+
+/* Fixed left->right green->yellow->red gradient anchored to the bar. */
+.master-section__fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    var(--color-meter-low) 0%,
+    var(--color-meter-low) 80%,
+    var(--color-meter-mid) 86%,
+    var(--color-meter-high) 90%,
+    var(--color-meter-high) 100%
+  );
+}
+
+/* Mask hides the unlit right portion of the bar. */
+.master-section__mask {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-bg-secondary);
+  transition: width 50ms linear;
+}
+
+.master-section--muted .master-section__fill {
+  background: var(--color-text-secondary);
+}
+
+/* 0 dB reference marker near the top of the scale. */
+.master-section__zero {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 89%;
+  width: 2px;
+  background: var(--color-bg-elevated);
+  opacity: 0.8;
+  pointer-events: none;
+}

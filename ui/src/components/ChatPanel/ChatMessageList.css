@@ -1,0 +1,50 @@
+/**
+ * ChatMessageList Styles
+ * jamjam brand guide: scrollable, flat, minimal decoration. Outer padding is
+ * owned by the chat panel container, so the list itself sits flush.
+ */
+
+.chat-message-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.chat-message-list--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-message-list__empty-text {
+  font-size: var(--font-size-caption);
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.chat-message-list__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-message-list__item {
+  display: flex;
+}
+
+/* Scrollbar styling (minimal) */
+.chat-message-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chat-message-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-message-list::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+}
+
+.chat-message-list::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-tertiary);
+}

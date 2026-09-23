@@ -1,0 +1,665 @@
+{
+  "common": {
+    "button": {
+      "cancel": "キャンセル",
+      "ok": "OK",
+      "back": "戻る",
+      "next": "次へ",
+      "save": "保存",
+      "retry": "再試行",
+      "close": "閉じる",
+      "refresh": "更新"
+    },
+    "label": {
+      "loading": "読み込み中...",
+      "required": "必須",
+      "or": "または"
+    },
+    "available": "利用可能",
+    "unavailable": "利用不可",
+    "none": "なし",
+    "default": "デフォルト"
+  },
+  "signaling": {
+    "server": {
+      "label": "サーバー"
+    },
+    "peer": {
+      "name": "表示名"
+    },
+    "connect": {
+      "button": "接続"
+    },
+    "disconnect": {
+      "button": "切断"
+    },
+    "connecting": "サーバーに接続中...",
+    "connected": "サーバーに接続中",
+    "rooms": {
+      "title": "利用可能なルーム",
+      "empty": "まだルームがありません"
+    },
+    "room": {
+      "name": "ルーム名",
+      "placeholder": "マイルーム"
+    }
+  },
+  "session": {
+    "welcome": {
+      "title": "jamjam へようこそ",
+      "subtitle": "低遅延で高品質な音声セッションを始めましょう"
+    },
+    "create": {
+      "button": "ルームを作成",
+      "loading": "ルームを作成中..."
+    },
+    "join": {
+      "button": "参加",
+      "placeholder": "ABC234",
+      "loading": "接続中..."
+    },
+    "leave": {
+      "button": "退出",
+      "confirmMessage": "本当に退室しますか？",
+      "confirmButton": "退室する",
+      "pending": "退室処理中..."
+    },
+    "room": {
+      "label": "ルーム"
+    },
+    "invite": {
+      "code": "招待コード",
+      "url": "招待URL",
+      "copied": "コピーしました",
+      "copy": "コピー",
+      "joinByCode": "招待コードで参加",
+      "shareHint": "このコードを共有して他の人を招待できます"
+    },
+    "participant": {
+      "count": "{{count}}名参加中",
+      "title": "参加者 ({{count}})",
+      "joined": "{{name}}さんが参加しました",
+      "left": "{{name}}さんが退出しました"
+    },
+    "testRoom": {
+      "title": "テストルーム",
+      "description": "動作確認用のテストルームに接続します"
+    },
+    "bandwidth": {
+      "insufficient": "帯域が不足しています（必要: 約{{required}}Mbps）",
+      "marginal": "帯域の余裕が少なくなっています",
+      "noSignal": "相手からパケットが届いていません"
+    },
+    "reconnect": {
+      "prompt": "接続が切断されました。再接続しますか？",
+      "retry": "再接続"
+    },
+    "signalingReconnect": {
+      "inProgress": "サーバーに再接続しています...",
+      "failed": "サーバーに再接続できませんでした: {{reason}}"
+    },
+    "notConnected": {
+      "reason": "まだサーバーに接続できていません"
+    }
+  },
+  "audio": {
+    "device": {
+      "input": "入力デバイス",
+      "output": "出力デバイス",
+      "select": "デバイスを選択",
+      "default": "デフォルト"
+    },
+    "test": {
+      "button": "テスト",
+      "recording": "録音中...",
+      "playing": "再生中..."
+    }
+  },
+  "chat": {
+    "title": "チャット",
+    "placeholder": "メッセージを入力...",
+    "sendLabel": "送信",
+    "emptyMessage": "メッセージはまだありません",
+    "addReaction": "リアクションを追加",
+    "emoji": {
+      "title": "絵文字",
+      "picker": "絵文字ピッカー",
+      "close": "閉じる",
+      "recent": "最近",
+      "smileys": "顔",
+      "gestures": "手",
+      "hearts": "ハート",
+      "music": "音楽",
+      "objects": "その他",
+      "recentEmpty": "最近使った絵文字はありません",
+      "empty": "絵文字がありません"
+    },
+    "system": {
+      "joined": "{{name}}さんが参加しました",
+      "left": "{{name}}さんが退出しました",
+      "leftUnknown": "参加者が退出しました"
+    },
+    "reaction": {
+      "quick": "クイックリアクション",
+      "react": "{{emoji}} でリアクション",
+      "more": "その他のリアクション",
+      "label_other": "{{emoji}} のリアクション、{{count}}人"
+    }
+  },
+  "mixer": {
+    "title": "ミキサー",
+    "self": "自分",
+    "master": "マスター",
+    "channel": {
+      "you": "自分",
+      "mute": "ミュート",
+      "unmute": "ミュート解除",
+      "solo": "ソロ",
+      "monitor": "モニタリング",
+      "monitorHint": "自分の音を遅延なしで聞く",
+      "pan": "パン",
+      "volume": "音量",
+      "panLabel": "{{name}} のパン",
+      "volumeLabel": "{{name}} の音量"
+    },
+    "volume": {
+      "master": "マスター音量"
+    }
+  },
+  "mute": {
+    "mute": "ミュート",
+    "unmute": "ミュート解除"
+  },
+  "audioLevel": {
+    "label": "入力レベル"
+  },
+  "settings": {
+    "title": "設定",
+    "tabs": {
+      "general": "一般",
+      "profile": "プロフィール",
+      "devices": "デバイス",
+      "diagnostics": "診断"
+    },
+    "general": {
+      "title": "一般設定",
+      "serverUrl": {
+        "customHint": "独自のサーバーを使用中: {{url}}",
+        "defaultHint": "既定のサーバーを使用中（{{url}}）"
+      }
+    },
+    "profile": {
+      "title": "プロフィール",
+      "name": "表示名",
+      "nameHint": "他の参加者に表示される名前です（1〜32文字）",
+      "nameRequired": "表示名は必須です",
+      "nameTooLong": "表示名は32文字以内で入力してください",
+      "namePlaceholder": "ユーザー"
+    },
+    "devices": {
+      "title": "オーディオデバイス",
+      "audioSettings": "オーディオ設定",
+      "inputDevice": "入力デバイス",
+      "outputDevice": "出力デバイス",
+      "inputChannels": "入力チャンネル",
+      "outputChannels": "出力チャンネル",
+      "channelL": "L/MONO",
+      "channelR": "R",
+      "selectDevice": "デバイスを選択",
+      "transmitChannels": "送信チャンネル",
+      "transmitChannelsDesc": "送信する音声のチャンネル数",
+      "mono": "モノラル",
+      "stereo": "ステレオ",
+      "sampleRate": "サンプルレート",
+      "sampleRateDesc": "高いほど音質向上、帯域消費増加（推奨値=48kHz）",
+      "buffer": "バッファサイズ",
+      "bufferDesc": "小さいほど低遅延、CPU負荷増加",
+      "latencyInput": "入力遅延",
+      "latencyOutput": "出力遅延",
+      "latencyTotal": "合計遅延",
+      "bufferOption": "{{samples}} サンプル ({{ms}}ms)",
+      "channelOption": "チャンネル {{channel}}"
+    },
+    "diagnostics": {
+      "title": "システム診断",
+      "logTitle": "ログファイル",
+      "logDescription": "うまく動かないときは、このフォルダにある jamjam.log を添えて連絡してください。",
+      "openLogFolder": "ログのフォルダを開く",
+      "description": "ネットワーク、オーディオ、CPU性能を診断し、最適な設定を提案します。",
+      "run": "診断を実行",
+      "running": "診断を実行中...",
+      "runningDesc": "システムの状態を確認しています",
+      "cancel": "キャンセル",
+      "rerun": "再診断",
+      "stepNetwork": "ネットワーク接続を確認",
+      "stepAudio": "オーディオデバイスを確認",
+      "stepCpu": "CPU性能をテスト",
+      "network": "ネットワーク",
+      "audio": "オーディオ",
+      "cpu": "CPU",
+      "publicIp": "パブリックIP",
+      "natType": "NAT種別",
+      "rtt": "RTT",
+      "jitter": "ジッタ",
+      "packetLoss": "パケットロス",
+      "inputDevice": "入力",
+      "outputDevice": "出力",
+      "deviceSourceConfigured": "設定のデバイス",
+      "deviceSourceOsDefault": "OSの既定デバイス",
+      "sampleRateLabel": "サンプルレート",
+      "supports48khz": "48kHz対応",
+      "minBuffer": "最小バッファ",
+      "estimatedLatency": "推定遅延",
+      "cores": "コア数",
+      "realtime": "リアルタイム",
+      "processingTime": "処理時間",
+      "problems": "問題点",
+      "noProblems": "問題は検出されませんでした",
+      "recommendation": "推奨設定",
+      "recommendedPreset": "推奨プリセット",
+      "zeroLatency": "ゼロレイテンシー",
+      "compatible": "対応可能",
+      "notCompatible": "非対応",
+      "applyPreset": "プリセットを適用",
+      "yes": "はい",
+      "no": "いいえ",
+      "severity": {
+        "error": "エラー",
+        "warning": "警告",
+        "info": "情報"
+      },
+      "notAvailable": "なし",
+      "samples": "{{count}} サンプル",
+      "unknownError": "不明なエラー",
+      "problemCodes": {
+        "noConnectivity": {
+          "message": "ネットワークに接続できません",
+          "suggestion": "ネットワーク接続を確認してください"
+        },
+        "noIpv6": {
+          "message": "IPv6 が利用できません",
+          "suggestion": "IPv4 が使用されます。ほとんどの接続ではこれで問題ありません。"
+        },
+        "symmetricNat": {
+          "message": "シンメトリック NAT を検出しました",
+          "suggestion": "P2P接続が難しい場合があります。別のネットワークやVPNの利用を検討してください。"
+        },
+        "unstableConnection": {
+          "message": "不安定なネットワーク接続を検出しました",
+          "suggestion": "WiFiではなく有線接続の利用を検討してください"
+        },
+        "highJitter": {
+          "message": "ネットワークジッターが大きいです（{{jitter}}ms）",
+          "suggestion": "バッファサイズを大きくするか、より安定した接続を利用してください"
+        },
+        "signalingUnreachable": {
+          "message": "シグナリングサーバーに接続できません",
+          "suggestion": "{{url}} にアクセスできるか確認してください。エラー: {{error}}"
+        },
+        "inputEnumerationFailed": {
+          "message": "入力デバイスの一覧取得に失敗しました",
+          "suggestion": "エラー: {{error}}。オーディオインターフェースを再起動してみてください。"
+        },
+        "outputEnumerationFailed": {
+          "message": "出力デバイスの一覧取得に失敗しました",
+          "suggestion": "エラー: {{error}}。オーディオインターフェースを再起動してみてください。"
+        },
+        "noInputDevices": {
+          "message": "入力デバイスが見つかりません",
+          "suggestion": "マイクまたはオーディオインターフェースを接続してください"
+        },
+        "noOutputDevices": {
+          "message": "出力デバイスが見つかりません",
+          "suggestion": "スピーカーまたはヘッドフォンを接続してください"
+        },
+        "inputNot48kHz": {
+          "message": "入力デバイス「{{device}}」は 48kHz に対応していない可能性があります",
+          "suggestion": "別のオーディオデバイスの利用を検討してください"
+        },
+        "outputNot48kHz": {
+          "message": "出力デバイス「{{device}}」は 48kHz に対応していない可能性があります",
+          "suggestion": "別のオーディオデバイスの利用を検討してください"
+        },
+        "lowBufferUnsupported": {
+          "message": "現在のデバイスは超低遅延バッファサイズに対応していない可能性があります",
+          "suggestion": "最小遅延を求める場合は、ASIO対応オーディオインターフェース（Windows）や専用オーディオインターフェースの利用を検討してください"
+        },
+        "noAsioDevices": {
+          "message": "ASIO デバイスが見つかりません",
+          "suggestion": "ASIO は Windows で最も低遅延です。ASIO4ALL のインストールや ASIO 対応のオーディオインターフェースの利用を検討してください。"
+        },
+        "insufficientRealtimeHeadroom": {
+          "message": "CPU にリアルタイム処理の余裕がない可能性があります",
+          "suggestion": "他のアプリケーションを閉じるか、バッファサイズを大きくしてください"
+        },
+        "highCpuUsage": {
+          "message": "CPU使用率が高いです（{{usage}}%）",
+          "suggestion": "他のアプリケーションを閉じてCPUリソースを解放してください"
+        },
+        "lowMemory": {
+          "message": "空きメモリが少ないです（{{mb}} MB）",
+          "suggestion": "他のアプリケーションを閉じてメモリを解放してください"
+        },
+        "smallBufferGlitchRisk": {
+          "message": "32サンプルバッファでは音切れが発生する可能性があります",
+          "suggestion": "より大きなバッファサイズ（64または128サンプル）の利用を検討してください"
+        }
+      }
+    },
+    "audio": {
+      "title": "オーディオ",
+      "preset": "オーディオプリセット",
+      "presetHint": "ネットワーク環境に合わせてプリセットを選択してください。",
+      "devices": "オーディオデバイス",
+      "buffer": "オーディオバッファ",
+      "bufferHint": "小さい値 = 低遅延だがノイズが出やすい。大きい値 = 安定。",
+      "bufferValue": "{{samples}} samples ({{ms}}ms)"
+    },
+    "preset": {
+      "title": "モード設定",
+      "zeroLatency": {
+        "name": "ゼロレイテンシー",
+        "useCase": "光回線同士"
+      },
+      "ultraLowLatency": {
+        "name": "超低遅延",
+        "useCase": "LAN接続"
+      },
+      "balanced": {
+        "name": "バランス",
+        "useCase": "一般的なインターネット"
+      },
+      "highQuality": {
+        "name": "高音質",
+        "useCase": "録音向け"
+      }
+    },
+    "advanced": {
+      "title": "詳細設定",
+      "sampleRate": "サンプルレート",
+      "frameSize": "フレームサイズ",
+      "codec": "コーデック",
+      "jitterBuffer": "バッファ",
+      "fec": "エラー補正"
+    },
+    "display": {
+      "title": "表示",
+      "language": "言語",
+      "theme": "テーマ",
+      "themeDark": "ダーク",
+      "themeLight": "ライト",
+      "themeSystem": "システム"
+    }
+  },
+  "status": {
+    "disconnected": "未接続",
+    "connecting": "接続中...",
+    "connected": "接続中",
+    "unstable": "不安定",
+    "error": "切断されました",
+    "latency": "{{ms}}ms",
+    "deviceLatency": "入力: {{input}}ms / 出力: {{output}}ms"
+  },
+  "preset": {
+    "zeroLatency": {
+      "name": "最速モード",
+      "description": "光回線同士の演奏に最適"
+    },
+    "ultraLowLatency": {
+      "name": "低遅延モード",
+      "description": "安定した回線での演奏に"
+    },
+    "balanced": {
+      "name": "バランスモード",
+      "description": "通常のインターネット接続に最適"
+    },
+    "highQuality": {
+      "name": "高音質モード",
+      "description": "高速回線での録音向け"
+    },
+    "recommended": "推奨",
+    "recommendation": {
+      "message": "接続品質（ジッター{{jitter}}ms）に基づき、{{preset}}への切り替えを推奨します",
+      "current": "現在: {{preset}}",
+      "switch": "切替"
+    }
+  },
+  "quality": {
+    "excellent": "非常に良好",
+    "good": "良好",
+    "fair": "普通",
+    "poor": "悪い",
+    "recommendation": "{{preset}}をお勧めします",
+    "switch": "{{preset}}に切り替え"
+  },
+  "error": {
+    "connection": {
+      "timeout": {
+        "title": "接続できませんでした",
+        "message": "相手が見つかりません。招待コードを確認してください。"
+      },
+      "refused": {
+        "title": "接続が拒否されました",
+        "message": "ルームが存在しないか、終了しています。"
+      },
+      "lost": {
+        "title": "接続が切れました",
+        "message": "ネットワークを確認してください。"
+      }
+    },
+    "audio": {
+      "device": {
+        "title": "マイクが使えません",
+        "message": "他のアプリがマイクを使用中かもしれません。"
+      },
+      "permission": {
+        "title": "マイクの許可が必要です",
+        "message": "設定からマイクへのアクセスを許可してください。"
+      }
+    },
+    "room": {
+      "full": {
+        "title": "ルームが満員です",
+        "message": "参加者数が上限に達しています。"
+      },
+      "password": {
+        "title": "パスワードが正しくありません",
+        "message": "入力したパスワードを確認してください。"
+      },
+      "notFound": {
+        "title": "ルームが見つかりません",
+        "message": "招待コードを確認してください。"
+      }
+    },
+    "invite": {
+      "invalidLink": {
+        "title": "招待リンクが無効です",
+        "message": "招待コードの形式が違います。リンクを確認するか、新しい招待をもらってください。"
+      }
+    },
+    "generic": {
+      "title": "エラーが発生しました",
+      "message": "しばらく待ってから再試行してください。"
+    },
+    "action": {
+      "retry": "再試行",
+      "changeDevice": "デバイスを変更",
+      "openSettings": "設定を開く"
+    }
+  },
+  "warning": {
+    "wifi": {
+      "title": "WiFi接続を検出しました",
+      "message": "有線接続を推奨します。WiFiは遅延が不安定になる可能性があります。"
+    },
+    "speaker": {
+      "title": "スピーカー使用を検出しました",
+      "message": "エコー防止のためヘッドフォンを推奨します。"
+    },
+    "packetLoss": {
+      "title": "パケットロス率が高くなっています",
+      "message": "ネットワーク状態を確認してください。"
+    },
+    "bandwidth": {
+      "title": "帯域不足のため音質を下げました",
+      "message": "ネットワーク状態が回復すると自動的に戻ります。"
+    }
+  },
+  "onboarding": {
+    "welcome": {
+      "title": "ようこそ",
+      "subtitle": "音楽仲間とオンラインで一緒に演奏しよう",
+      "requirements": "ヘッドフォンと有線接続を推奨します"
+    },
+    "mic": {
+      "title": "マイクを選択",
+      "subtitle": "使用するマイクを選んでください",
+      "test": "声を出してメーターが動くことを確認"
+    },
+    "speaker": {
+      "title": "スピーカーを選択",
+      "subtitle": "使用するスピーカーを選んでください",
+      "testButton": "テスト音を再生"
+    },
+    "test": {
+      "title": "音声テスト",
+      "subtitle": "マイクとスピーカーをテストします",
+      "recordButton": "録音して確認",
+      "question": "自分の声が聞こえましたか？"
+    },
+    "preset": {
+      "title": "モードを選択",
+      "subtitle": "まずはバランスモードがおすすめです"
+    },
+    "complete": {
+      "title": "準備完了！",
+      "subtitle": "セッションを始めましょう"
+    },
+    "skip": "後で設定する"
+  },
+  "notification": {
+    "settingsChanged": "設定を変更しました",
+    "connected": "接続しました",
+    "disconnected": "切断しました",
+    "bandwidthRecovered": "帯域が回復しました",
+    "delayAdjusted": "バッファサイズを調整しました"
+  },
+  "connectionHistory": {
+    "title": "最近の接続",
+    "remove": "削除",
+    "empty": "まだ接続履歴がありません",
+    "yesterday": "昨日",
+    "daysAgo": "{{days}}日前"
+  },
+  "diagnostics": {
+    "title": "自己診断",
+    "tabs": {
+      "overview": "概要",
+      "network": "ネットワーク",
+      "audio": "オーディオ",
+      "cpu": "CPU"
+    },
+    "startText": "P2Pオーディオセッションの環境を診断します。",
+    "runAll": "全て診断を実行",
+    "running": "診断を実行中...",
+    "error": "エラー",
+    "overallScore": "総合スコア",
+    "network": "ネットワーク",
+    "audio": "オーディオ",
+    "cpu": "CPUパフォーマンス",
+    "recommendation": "推奨",
+    "recommendedPreset": "推奨プリセット",
+    "zeroLatencyMode": "ゼロレイテンシーモード",
+    "compatible": "対応可能",
+    "incompatible": "非推奨",
+    "detectedProblems": "検出された問題",
+    "noProblems": "問題は検出されませんでした",
+    "rerunAll": "全て再診断",
+    "rerunNetwork": "ネットワーク再診断",
+    "rerunAudio": "オーディオ再診断",
+    "rerunCpu": "CPU再診断",
+    "presets": {
+      "zeroLatency": "ゼロレイテンシー",
+      "ultraLowLatency": "超低遅延",
+      "balanced": "バランス",
+      "highQuality": "高音質"
+    },
+    "ipSupport": "IPサポート",
+    "publicIpv4": "パブリックIPv4",
+    "publicIpv6": "パブリックIPv6",
+    "natType": "NATタイプ",
+    "natTypes": {
+      "noNat": "直接接続（NATなし）",
+      "fullCone": "フルコーンNAT",
+      "restrictedCone": "制限コーンNAT",
+      "portRestrictedCone": "ポート制限コーンNAT",
+      "symmetric": "対称型NAT",
+      "unknown": "不明"
+    },
+    "signalingServer": "シグナリングサーバー",
+    "reachable": "到達可能",
+    "unreachable": "到達不能",
+    "latency": "遅延",
+    "connectionQuality": "接続品質",
+    "jitter": "ジッター",
+    "selectedDevices": "選択中のデバイス",
+    "inputDevice": "入力",
+    "outputDevice": "出力",
+    "noDevice": "デバイスなし",
+    "lowLatencySupport": "低遅延サポート",
+    "estimatedMinLatency": "推定最小遅延",
+    "asioDevices": "ASIOデバイス",
+    "inputDevices": "入力デバイス",
+    "outputDevices": "出力デバイス",
+    "deviceName": "名前",
+    "grade": "評価",
+    "systemInfo": "システム情報",
+    "cpuCores": "CPUコア数",
+    "cpuUsage": "CPU使用率",
+    "availableMemory": "空きメモリ",
+    "realtimeCapability": "リアルタイム処理能力",
+    "realtimeCapable": "リアルタイム処理が可能",
+    "realtimeNotCapable": "パフォーマンス問題の可能性あり",
+    "benchmarkResults": "ベンチマーク結果",
+    "bufferSize": "バッファサイズ",
+    "processingTime": "処理時間",
+    "frameDuration": "フレーム時間",
+    "realtimeFactor": "RT係数",
+    "status": "状態",
+    "rtFactorNote": "RT係数 < 0.5 は、リアルタイム処理に50%以上の余裕があることを示します。"
+  },
+  "deviceSelector": {
+    "input": "入力",
+    "output": "出力",
+    "empty": "デバイスが見つかりません"
+  },
+  "sessionStats": {
+    "waiting": "接続を待っています...",
+    "measuring": "測定中...",
+    "network": "ネットワーク",
+    "rtt": "RTT",
+    "jitter": "ジッター",
+    "packetLoss": "パケットロス",
+    "underruns": "アンダーラン",
+    "peerAudio": "相手の音声",
+    "sampleRate": "サンプルレート",
+    "frameSize": "フレームサイズ",
+    "frameSizeValue": "{{size}} サンプル",
+    "codec": "コーデック",
+    "localRate": "自分のレート",
+    "resampling": "リサンプリング中: {{from}} → {{to}} kHz",
+    "latencyBreakdown": "遅延の内訳",
+    "upstream": "上り (自分 → 相手)",
+    "downstream": "下り (相手 → 自分)",
+    "total": "合計",
+    "summary": "まとめ",
+    "upstreamShort": "上り",
+    "downstreamShort": "下り",
+    "roundTrip": "往復",
+    "packets": "パケット",
+    "sent": "送信",
+    "received": "受信",
+    "bytesSent": "送信バイト数",
+    "bytesReceived": "受信バイト数"
+  }
+}

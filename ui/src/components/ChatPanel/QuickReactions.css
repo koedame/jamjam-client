@@ -1,0 +1,52 @@
+/**
+ * QuickReactions Styles
+ * MixerPanel design guide: accent-blue for active state, radius-control
+ */
+
+.quick-reactions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.quick-reactions__button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  font-size: var(--font-size-body);
+  transition: background-color var(--transition-fast),
+              transform var(--transition-fast);
+}
+
+.quick-reactions__button:hover:not(:disabled) {
+  background-color: var(--color-bg-hover);
+}
+
+.quick-reactions__button--hovered {
+  transform: scale(1.2);
+}
+
+.quick-reactions__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.quick-reactions__button--more {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-normal);
+}
+
+.quick-reactions__button--more:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}

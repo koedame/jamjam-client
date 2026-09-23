@@ -1,0 +1,11 @@
+/**
+ * ReactionBar Styles
+ * MixerPanel design guide: accent-blue for active state, radius-control
+ */
+
+.reaction-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}

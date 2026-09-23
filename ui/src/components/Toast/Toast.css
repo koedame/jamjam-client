@@ -1,0 +1,53 @@
+/**
+ * Toast styles (ui.pen Toast States): 280px card, radius-card, shadow-modal.
+ * Background/border are the same bg-card/border-dark for every type; only
+ * the icon color varies (components/README.md#toast).
+ */
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 280px;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-modal);
+}
+
+.toast__icon {
+  flex-shrink: 0;
+  display: flex;
+}
+
+.toast__icon--spin {
+  animation: toast-spin 1s linear infinite;
+}
+
+@keyframes toast-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.toast__message {
+  font-size: var(--font-size-body);
+  color: var(--color-text-primary);
+}
+
+.toast--success .toast__icon {
+  color: var(--color-success);
+}
+
+.toast--error .toast__icon {
+  color: var(--color-danger);
+}
+
+.toast--info .toast__icon {
+  color: var(--color-accent);
+}
+
+.toast--warning .toast__icon {
+  color: var(--color-warning);
+}

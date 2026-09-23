@@ -1,0 +1,66 @@
+//! Network error types
+
+use thiserror::Error;
+
+/// Errors that can occur in the network subsystem
+#[derive(Error, Debug)]
+pub enum NetworkError {
+    #[error("Connection timeout")]
+    ConnectionTimeout,
+
+    #[error("Connection refused")]
+    ConnectionRefused,
+
+    #[error("Already connected")]
+    AlreadyConnected,
+
+    #[error("Not connected")]
+    NotConnected,
+
+    #[error("Send buffer full")]
+    SendBufferFull,
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Invalid packet")]
+    InvalidPacket,
+
+    /// Audio encoding could not be set up: unavailable codec, or a poisoned lock
+    #[error("Configuration error: {0}")]
+    Configuration(String),
+
+    #[error("Address parse error: {0}")]
+    AddrParse(#[from] std::net::AddrParseError),
+
+    #[error("STUN failed: {0}")]
+    StunFailed(String),
+
+    #[error("Signaling error: {0}")]
+    SignalingError(String),
+
+    /// The signaling server closed the WebSocket (or it dropped)
+    #[error("Connection closed")]
+    ConnectionClosed,
+
+    #[error("Session full")]
+    SessionFull,
+
+    #[error("Peer not found: {0}")]
+    PeerNotFound(String),
+
+    #[error("Room not found: {0}")]
+    RoomNotFound(String),
+
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+
+    #[error("Key exchange failed: {0}")]
+    KeyExchangeFailed(String),
+
+    #[error("No connection candidates available")]
+    NoCandidates,
+
+    #[error("Connection failed: {0}")]
+    ConnectionFailed(String),
+}

@@ -1,0 +1,116 @@
+/**
+ * ChannelStrip styles
+ * jamjam brand (ui.pen Organisms/ChannelStrip): flat near-black surface, 3px
+ * border, radius-control (8px), heading font for the name.
+ */
+
+.channel-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100px;
+  padding: var(--space-sm);
+  background: var(--color-bg-secondary);
+  border: 3px solid var(--color-border);
+}
+
+/* Row: fader column + meter column (84px inner width = 44 + 4 + 36). */
+.channel-strip__meters {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+.channel-strip__col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.channel-strip__value {
+  font-size: 10px;
+  font-family: var(--font-family-mono);
+  color: var(--color-text-secondary);
+  line-height: 1;
+}
+
+.channel-strip__name {
+  font-family: var(--font-family-heading);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Mute button, and on the local strip the monitor button beside it */
+.channel-strip__buttons {
+  display: flex;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+.channel-strip__mute,
+.channel-strip__monitor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0;
+  background: var(--color-bg-secondary);
+  border: 2px solid var(--color-border);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.channel-strip__monitor {
+  color: var(--color-text-secondary);
+}
+
+.channel-strip__monitor--on {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.channel-strip__monitor:hover {
+  border-color: var(--color-text-secondary);
+}
+
+.channel-strip__monitor--on:hover {
+  border-color: var(--color-accent);
+}
+
+.channel-strip__mute--active {
+  color: var(--color-accent);
+}
+
+.channel-strip__mute--muted {
+  color: var(--color-text-secondary);
+}
+
+.channel-strip__mute--active:hover {
+  border-color: var(--color-accent);
+}
+
+.channel-strip__mute--muted:hover {
+  border-color: var(--color-text-secondary);
+}
+
+.channel-strip__mute:active,
+.channel-strip__monitor:active {
+  background: var(--color-bg-elevated);
+}
+
+.channel-strip__mute:focus-visible,
+.channel-strip__monitor:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}

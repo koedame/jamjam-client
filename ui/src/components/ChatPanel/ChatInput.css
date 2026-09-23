@@ -1,0 +1,77 @@
+/**
+ * ChatInput Styles
+ * jamjam brand guide (ui.pen chatPanel InputArea): recessed field + a square
+ * yellow send button. Outer padding is owned by the chat panel container.
+ */
+
+.chat-input {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.chat-input__textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  max-height: calc(var(--font-size-caption) * var(--line-height-normal) * 4 + 20px);
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  resize: none;
+  overflow-y: auto;
+}
+
+.chat-input__textarea::placeholder {
+  color: var(--color-text-disabled);
+}
+
+.chat-input__textarea:focus {
+  outline: none;
+  border-color: var(--color-border-focus);
+}
+
+.chat-input__textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-input__send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.chat-input__send-btn:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.chat-input__send-btn:active:not(:disabled) {
+  background: var(--color-accent-active);
+}
+
+.chat-input__send-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.chat-input__send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

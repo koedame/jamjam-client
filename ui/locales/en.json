@@ -1,0 +1,667 @@
+{
+  "common": {
+    "button": {
+      "cancel": "Cancel",
+      "ok": "OK",
+      "back": "Back",
+      "next": "Next",
+      "save": "Save",
+      "retry": "Retry",
+      "close": "Close",
+      "refresh": "Refresh"
+    },
+    "label": {
+      "loading": "Loading...",
+      "required": "Required",
+      "or": "or"
+    },
+    "available": "Available",
+    "unavailable": "Unavailable",
+    "none": "None",
+    "default": "Default"
+  },
+  "signaling": {
+    "server": {
+      "label": "Server"
+    },
+    "peer": {
+      "name": "Your Name"
+    },
+    "connect": {
+      "button": "Connect"
+    },
+    "disconnect": {
+      "button": "Disconnect"
+    },
+    "connecting": "Connecting to server...",
+    "connected": "Connected to server",
+    "rooms": {
+      "title": "Available Rooms",
+      "empty": "No rooms available"
+    },
+    "room": {
+      "name": "Room Name",
+      "placeholder": "My Room"
+    }
+  },
+  "session": {
+    "welcome": {
+      "title": "Welcome to jamjam",
+      "subtitle": "Start a low-latency, high-quality audio session"
+    },
+    "create": {
+      "button": "Create Room",
+      "loading": "Creating room..."
+    },
+    "join": {
+      "button": "Join",
+      "placeholder": "ABC234",
+      "loading": "Connecting..."
+    },
+    "leave": {
+      "button": "Leave",
+      "confirmMessage": "Are you sure you want to leave?",
+      "confirmButton": "Leave",
+      "pending": "Leaving..."
+    },
+    "room": {
+      "label": "Room"
+    },
+    "invite": {
+      "code": "Invite Code",
+      "url": "Invite URL",
+      "copied": "Copied",
+      "copy": "Copy",
+      "joinByCode": "Join by Invite Code",
+      "shareHint": "Share this code with others to join"
+    },
+    "participant": {
+      "count_one": "{{count}} participant",
+      "count_other": "{{count}} participants",
+      "title": "Participants ({{count}})",
+      "joined": "{{name}} joined",
+      "left": "{{name}} left"
+    },
+    "testRoom": {
+      "title": "Test Room",
+      "description": "Connect to a standing room for testing"
+    },
+    "bandwidth": {
+      "insufficient": "Bandwidth is insufficient (about {{required}} Mbps needed)",
+      "marginal": "Bandwidth headroom is running low",
+      "noSignal": "No packets are arriving from the peer"
+    },
+    "reconnect": {
+      "prompt": "Connection lost. Reconnect?",
+      "retry": "Reconnect"
+    },
+    "signalingReconnect": {
+      "inProgress": "Reconnecting to the server...",
+      "failed": "Couldn't reconnect to the server: {{reason}}"
+    },
+    "notConnected": {
+      "reason": "Not connected to the server yet"
+    }
+  },
+  "audio": {
+    "device": {
+      "input": "Input Device",
+      "output": "Output Device",
+      "select": "Select Device",
+      "default": "Default"
+    },
+    "test": {
+      "button": "Test",
+      "recording": "Recording...",
+      "playing": "Playing..."
+    }
+  },
+  "chat": {
+    "title": "Chat",
+    "placeholder": "Type a message...",
+    "sendLabel": "Send",
+    "emptyMessage": "No messages yet",
+    "addReaction": "Add reaction",
+    "emoji": {
+      "title": "Emoji",
+      "picker": "Emoji picker",
+      "close": "Close",
+      "recent": "Recent",
+      "smileys": "Smileys",
+      "gestures": "Gestures",
+      "hearts": "Hearts",
+      "music": "Music",
+      "objects": "Other",
+      "recentEmpty": "No recently used emoji",
+      "empty": "No emoji"
+    },
+    "system": {
+      "joined": "{{name}} joined",
+      "left": "{{name}} left",
+      "leftUnknown": "A participant left"
+    },
+    "reaction": {
+      "quick": "Quick reactions",
+      "react": "React with {{emoji}}",
+      "more": "More reactions",
+      "label_one": "{{emoji}} reaction, {{count}} person",
+      "label_other": "{{emoji}} reaction, {{count}} people"
+    }
+  },
+  "mixer": {
+    "title": "Mixer",
+    "self": "You",
+    "master": "Master",
+    "channel": {
+      "you": "You",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "solo": "Solo",
+      "monitor": "Monitor",
+      "monitorHint": "Hear yourself without delay",
+      "pan": "Pan",
+      "volume": "Volume",
+      "panLabel": "{{name}} pan",
+      "volumeLabel": "{{name}} volume"
+    },
+    "volume": {
+      "master": "Master Volume"
+    }
+  },
+  "mute": {
+    "mute": "Mute",
+    "unmute": "Unmute"
+  },
+  "audioLevel": {
+    "label": "Input Level"
+  },
+  "settings": {
+    "title": "Settings",
+    "tabs": {
+      "general": "General",
+      "profile": "Profile",
+      "devices": "Devices",
+      "diagnostics": "Diagnostics"
+    },
+    "general": {
+      "title": "General",
+      "serverUrl": {
+        "customHint": "Using a custom server: {{url}}",
+        "defaultHint": "Using the default server ({{url}})"
+      }
+    },
+    "profile": {
+      "title": "Profile",
+      "name": "Display Name",
+      "nameHint": "This name is shown to other participants (1-32 characters)",
+      "nameRequired": "Display name is required",
+      "nameTooLong": "Display name must be 32 characters or less",
+      "namePlaceholder": "User"
+    },
+    "devices": {
+      "title": "Audio Devices",
+      "audioSettings": "Audio Settings",
+      "inputDevice": "Input Device",
+      "outputDevice": "Output Device",
+      "inputChannels": "Input Channels",
+      "outputChannels": "Output Channels",
+      "channelL": "L/MONO",
+      "channelR": "R",
+      "selectDevice": "Select device",
+      "transmitChannels": "Transmit Channels",
+      "transmitChannelsDesc": "Number of audio channels to transmit",
+      "mono": "Mono",
+      "stereo": "Stereo",
+      "sampleRate": "Sample Rate",
+      "sampleRateDesc": "Higher improves quality and uses more bandwidth (recommended: 48kHz)",
+      "buffer": "Buffer Size",
+      "bufferDesc": "Smaller = lower latency, higher CPU usage",
+      "latencyInput": "Input Latency",
+      "latencyOutput": "Output Latency",
+      "latencyTotal": "Total Latency",
+      "bufferOption": "{{samples}} samples ({{ms}}ms)",
+      "channelOption": "Ch {{channel}}"
+    },
+    "diagnostics": {
+      "title": "System Diagnostics",
+      "logTitle": "Log file",
+      "logDescription": "If something does not work, attach jamjam.log from this folder when you report it.",
+      "openLogFolder": "Open log folder",
+      "description": "Diagnose network, audio, and CPU performance to recommend optimal settings.",
+      "run": "Run Diagnostics",
+      "running": "Running diagnostics...",
+      "runningDesc": "Checking system status",
+      "cancel": "Cancel",
+      "rerun": "Run Again",
+      "stepNetwork": "Checking network connection",
+      "stepAudio": "Checking audio devices",
+      "stepCpu": "Testing CPU performance",
+      "network": "Network",
+      "audio": "Audio",
+      "cpu": "CPU",
+      "publicIp": "Public IP",
+      "natType": "NAT Type",
+      "rtt": "RTT",
+      "jitter": "Jitter",
+      "packetLoss": "Packet Loss",
+      "inputDevice": "Input",
+      "outputDevice": "Output",
+      "deviceSourceConfigured": "your setting",
+      "deviceSourceOsDefault": "OS default",
+      "sampleRateLabel": "Sample Rate",
+      "supports48khz": "48kHz",
+      "minBuffer": "Min Buffer",
+      "estimatedLatency": "Est. Latency",
+      "cores": "Cores",
+      "realtime": "Realtime",
+      "processingTime": "Processing",
+      "problems": "Problems",
+      "noProblems": "No problems detected",
+      "recommendation": "Recommendation",
+      "recommendedPreset": "Recommended Preset",
+      "zeroLatency": "Zero Latency",
+      "compatible": "Compatible",
+      "notCompatible": "Not Compatible",
+      "applyPreset": "Apply Preset",
+      "yes": "Yes",
+      "no": "No",
+      "severity": {
+        "error": "Error",
+        "warning": "Warning",
+        "info": "Info"
+      },
+      "notAvailable": "N/A",
+      "samples": "{{count}} samples",
+      "unknownError": "Unknown error",
+      "problemCodes": {
+        "noConnectivity": {
+          "message": "No network connectivity detected",
+          "suggestion": "Check your network connection"
+        },
+        "noIpv6": {
+          "message": "IPv6 is not available",
+          "suggestion": "IPv4 will be used. This is usually fine for most connections."
+        },
+        "symmetricNat": {
+          "message": "Symmetric NAT detected",
+          "suggestion": "P2P connections may be difficult. Consider using a different network or VPN."
+        },
+        "unstableConnection": {
+          "message": "Unstable network connection detected",
+          "suggestion": "Consider using a wired connection instead of WiFi"
+        },
+        "highJitter": {
+          "message": "High network jitter detected ({{jitter}}ms)",
+          "suggestion": "Increase buffer size or use a more stable connection"
+        },
+        "signalingUnreachable": {
+          "message": "Cannot connect to signaling server",
+          "suggestion": "Check if {{url}} is accessible. Error: {{error}}"
+        },
+        "inputEnumerationFailed": {
+          "message": "Failed to enumerate input devices",
+          "suggestion": "Error: {{error}}. Try restarting your audio interface."
+        },
+        "outputEnumerationFailed": {
+          "message": "Failed to enumerate output devices",
+          "suggestion": "Error: {{error}}. Try restarting your audio interface."
+        },
+        "noInputDevices": {
+          "message": "No input devices found",
+          "suggestion": "Connect a microphone or audio interface"
+        },
+        "noOutputDevices": {
+          "message": "No output devices found",
+          "suggestion": "Connect speakers or headphones"
+        },
+        "inputNot48kHz": {
+          "message": "Input device '{{device}}' may not support 48kHz",
+          "suggestion": "Consider using a different audio device"
+        },
+        "outputNot48kHz": {
+          "message": "Output device '{{device}}' may not support 48kHz",
+          "suggestion": "Consider using a different audio device"
+        },
+        "lowBufferUnsupported": {
+          "message": "Current devices may not support ultra-low buffer sizes",
+          "suggestion": "For lowest latency, consider using an ASIO-compatible audio interface (Windows) or a dedicated audio interface"
+        },
+        "noAsioDevices": {
+          "message": "No ASIO devices detected",
+          "suggestion": "ASIO provides the lowest latency on Windows. Consider installing ASIO4ALL or using an audio interface with native ASIO support."
+        },
+        "insufficientRealtimeHeadroom": {
+          "message": "CPU may not provide enough headroom for real-time processing",
+          "suggestion": "Close other applications or use a larger buffer size"
+        },
+        "highCpuUsage": {
+          "message": "High CPU usage detected ({{usage}}%)",
+          "suggestion": "Close other applications to free up CPU resources"
+        },
+        "lowMemory": {
+          "message": "Low available memory ({{mb}} MB)",
+          "suggestion": "Close other applications to free up memory"
+        },
+        "smallBufferGlitchRisk": {
+          "message": "32-sample buffer may cause audio glitches",
+          "suggestion": "Consider using a larger buffer size (64 or 128 samples)"
+        }
+      }
+    },
+    "audio": {
+      "title": "Audio",
+      "preset": "Audio Preset",
+      "presetHint": "Select a preset based on your network environment.",
+      "devices": "Audio Devices",
+      "buffer": "Audio Buffer",
+      "bufferHint": "Lower = less latency but may crackle. Higher = more stable.",
+      "bufferValue": "{{samples}} samples ({{ms}}ms)"
+    },
+    "preset": {
+      "title": "Mode Settings",
+      "zeroLatency": {
+        "name": "Zero Latency",
+        "useCase": "Fiber connections"
+      },
+      "ultraLowLatency": {
+        "name": "Ultra Low Latency",
+        "useCase": "LAN sessions"
+      },
+      "balanced": {
+        "name": "Balanced",
+        "useCase": "Typical internet"
+      },
+      "highQuality": {
+        "name": "High Quality",
+        "useCase": "Recording"
+      }
+    },
+    "advanced": {
+      "title": "Advanced Settings",
+      "sampleRate": "Sample Rate",
+      "frameSize": "Frame Size",
+      "codec": "Codec",
+      "jitterBuffer": "Buffer",
+      "fec": "Error Correction"
+    },
+    "display": {
+      "title": "Display",
+      "language": "Language",
+      "theme": "Theme",
+      "themeDark": "Dark",
+      "themeLight": "Light",
+      "themeSystem": "System"
+    }
+  },
+  "status": {
+    "disconnected": "Disconnected",
+    "connecting": "Connecting...",
+    "connected": "Connected",
+    "unstable": "Unstable",
+    "error": "Disconnected",
+    "latency": "{{ms}}ms",
+    "deviceLatency": "in {{input}}ms / out {{output}}ms"
+  },
+  "preset": {
+    "zeroLatency": {
+      "name": "Fastest Mode",
+      "description": "For fiber-to-fiber connections"
+    },
+    "ultraLowLatency": {
+      "name": "Low Delay Mode",
+      "description": "For stable connections"
+    },
+    "balanced": {
+      "name": "Balanced Mode",
+      "description": "For typical internet connections"
+    },
+    "highQuality": {
+      "name": "High Quality Mode",
+      "description": "For high-speed recording"
+    },
+    "recommended": "Recommended",
+    "recommendation": {
+      "message": "Based on your connection ({{jitter}}ms jitter), we recommend switching to {{preset}}",
+      "current": "Current: {{preset}}",
+      "switch": "Switch"
+    }
+  },
+  "quality": {
+    "excellent": "Excellent",
+    "good": "Good",
+    "fair": "Fair",
+    "poor": "Poor",
+    "recommendation": "We recommend {{preset}}",
+    "switch": "Switch to {{preset}}"
+  },
+  "error": {
+    "connection": {
+      "timeout": {
+        "title": "Connection Failed",
+        "message": "Could not find the other party. Please check the invite code."
+      },
+      "refused": {
+        "title": "Connection Refused",
+        "message": "The room does not exist or has ended."
+      },
+      "lost": {
+        "title": "Connection Lost",
+        "message": "Please check your network connection."
+      }
+    },
+    "audio": {
+      "device": {
+        "title": "Microphone Unavailable",
+        "message": "Another app may be using the microphone."
+      },
+      "permission": {
+        "title": "Microphone Permission Required",
+        "message": "Please allow microphone access in settings."
+      }
+    },
+    "room": {
+      "full": {
+        "title": "Room is Full",
+        "message": "The participant limit has been reached."
+      },
+      "password": {
+        "title": "Incorrect Password",
+        "message": "Please check the password you entered."
+      },
+      "notFound": {
+        "title": "Room Not Found",
+        "message": "Please check the invite code."
+      }
+    },
+    "invite": {
+      "invalidLink": {
+        "title": "Invalid Invite Link",
+        "message": "This invite link isn't in the right format. Check it, or ask for a new one."
+      }
+    },
+    "generic": {
+      "title": "An Error Occurred",
+      "message": "Please wait a moment and try again."
+    },
+    "action": {
+      "retry": "Retry",
+      "changeDevice": "Change Device",
+      "openSettings": "Open Settings"
+    }
+  },
+  "warning": {
+    "wifi": {
+      "title": "WiFi Connection Detected",
+      "message": "Wired connection is recommended. WiFi may cause unstable latency."
+    },
+    "speaker": {
+      "title": "Speaker Usage Detected",
+      "message": "Headphones are recommended to prevent echo."
+    },
+    "packetLoss": {
+      "title": "High Packet Loss Detected",
+      "message": "Please check your network connection."
+    },
+    "bandwidth": {
+      "title": "Audio Quality Reduced Due to Low Bandwidth",
+      "message": "Quality will automatically restore when network improves."
+    }
+  },
+  "onboarding": {
+    "welcome": {
+      "title": "Welcome",
+      "subtitle": "Play music online with your friends",
+      "requirements": "Headphones and wired connection recommended"
+    },
+    "mic": {
+      "title": "Select Microphone",
+      "subtitle": "Choose the microphone you want to use",
+      "test": "Speak and check if the meter moves"
+    },
+    "speaker": {
+      "title": "Select Speaker",
+      "subtitle": "Choose the speaker you want to use",
+      "testButton": "Play Test Sound"
+    },
+    "test": {
+      "title": "Audio Test",
+      "subtitle": "Test your microphone and speaker",
+      "recordButton": "Record and Check",
+      "question": "Did you hear your voice?"
+    },
+    "preset": {
+      "title": "Select Mode",
+      "subtitle": "We recommend starting with Balanced Mode"
+    },
+    "complete": {
+      "title": "All Set!",
+      "subtitle": "Let's start a session"
+    },
+    "skip": "Set up later"
+  },
+  "notification": {
+    "settingsChanged": "Settings changed",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "bandwidthRecovered": "Bandwidth recovered",
+    "delayAdjusted": "Buffer size adjusted"
+  },
+  "connectionHistory": {
+    "title": "Recent Connections",
+    "remove": "Remove",
+    "empty": "No connection history",
+    "yesterday": "Yesterday",
+    "daysAgo": "{{days}} days ago"
+  },
+  "diagnostics": {
+    "title": "Self-Diagnostics",
+    "tabs": {
+      "overview": "Overview",
+      "network": "Network",
+      "audio": "Audio",
+      "cpu": "CPU"
+    },
+    "startText": "Run diagnostics to check your environment for P2P audio sessions.",
+    "runAll": "Run All Diagnostics",
+    "running": "Running diagnostics...",
+    "error": "Error",
+    "overallScore": "Overall Score",
+    "network": "Network",
+    "audio": "Audio",
+    "cpu": "CPU Performance",
+    "recommendation": "Recommendation",
+    "recommendedPreset": "Recommended Preset",
+    "zeroLatencyMode": "Zero Latency Mode",
+    "compatible": "Compatible",
+    "incompatible": "Not Recommended",
+    "detectedProblems": "Detected Problems",
+    "noProblems": "No problems detected",
+    "rerunAll": "Re-run All Diagnostics",
+    "rerunNetwork": "Re-run Network Diagnostics",
+    "rerunAudio": "Re-run Audio Diagnostics",
+    "rerunCpu": "Re-run CPU Diagnostics",
+    "presets": {
+      "zeroLatency": "Zero Latency",
+      "ultraLowLatency": "Ultra Low Latency",
+      "balanced": "Balanced",
+      "highQuality": "High Quality"
+    },
+    "ipSupport": "IP Support",
+    "publicIpv4": "Public IPv4",
+    "publicIpv6": "Public IPv6",
+    "natType": "NAT Type",
+    "natTypes": {
+      "noNat": "Direct Connection (No NAT)",
+      "fullCone": "Full Cone NAT",
+      "restrictedCone": "Restricted Cone NAT",
+      "portRestrictedCone": "Port Restricted Cone NAT",
+      "symmetric": "Symmetric NAT",
+      "unknown": "Unknown"
+    },
+    "signalingServer": "Signaling Server",
+    "reachable": "Reachable",
+    "unreachable": "Unreachable",
+    "latency": "Latency",
+    "connectionQuality": "Connection Quality",
+    "jitter": "Jitter",
+    "selectedDevices": "Selected Devices",
+    "inputDevice": "Input",
+    "outputDevice": "Output",
+    "noDevice": "No device",
+    "lowLatencySupport": "Low Latency Support",
+    "estimatedMinLatency": "Est. Min Latency",
+    "asioDevices": "ASIO Devices",
+    "inputDevices": "Input Devices",
+    "outputDevices": "Output Devices",
+    "deviceName": "Name",
+    "grade": "Grade",
+    "systemInfo": "System Info",
+    "cpuCores": "CPU Cores",
+    "cpuUsage": "CPU Usage",
+    "availableMemory": "Available Memory",
+    "realtimeCapability": "Realtime Capability",
+    "realtimeCapable": "Capable of realtime processing",
+    "realtimeNotCapable": "May have performance issues",
+    "benchmarkResults": "Benchmark Results",
+    "bufferSize": "Buffer Size",
+    "processingTime": "Processing Time",
+    "frameDuration": "Frame Duration",
+    "realtimeFactor": "RT Factor",
+    "status": "Status",
+    "rtFactorNote": "RT Factor < 0.5 indicates 50%+ headroom for realtime processing."
+  },
+  "deviceSelector": {
+    "input": "Input",
+    "output": "Output",
+    "empty": "No devices found"
+  },
+  "sessionStats": {
+    "waiting": "Waiting for connection...",
+    "measuring": "Measuring...",
+    "network": "Network",
+    "rtt": "RTT",
+    "jitter": "Jitter",
+    "packetLoss": "Packet Loss",
+    "underruns": "Underruns",
+    "peerAudio": "Peer Audio",
+    "sampleRate": "Sample Rate",
+    "frameSize": "Frame Size",
+    "frameSizeValue": "{{size}} samples",
+    "codec": "Codec",
+    "localRate": "Local Rate",
+    "resampling": "Resampling active: {{from}} → {{to}} kHz",
+    "latencyBreakdown": "Latency Breakdown",
+    "upstream": "Upstream (You → Peer)",
+    "downstream": "Downstream (Peer → You)",
+    "total": "Total",
+    "summary": "Summary",
+    "upstreamShort": "Upstream",
+    "downstreamShort": "Downstream",
+    "roundTrip": "Round-trip",
+    "packets": "Packets",
+    "sent": "Sent",
+    "received": "Received",
+    "bytesSent": "Bytes sent",
+    "bytesReceived": "Bytes received"
+  }
+}

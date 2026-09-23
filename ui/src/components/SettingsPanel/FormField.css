@@ -1,0 +1,70 @@
+/**
+ * FormField styles - jamjam brand (ui.pen Screens/Settings).
+ */
+
+.form-field {
+  display: flex;
+}
+
+.form-field__label-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.form-field__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.form-field__hint,
+.form-field__description {
+  margin: 0;
+  font-size: var(--font-size-tiny);
+  color: var(--color-text-secondary);
+}
+
+.form-field__error {
+  margin: 0;
+  font-size: var(--font-size-tiny);
+  color: var(--color-danger);
+}
+
+/* Stacked: label above the control (device / profile / language). */
+.form-field--stacked {
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.form-field--stacked .form-field__label {
+  font-size: var(--font-size-small);
+  color: var(--color-text-secondary);
+}
+
+.form-field--stacked .form-field__content {
+  gap: var(--space-xs);
+}
+
+/* Row: title + description on the left, control on the right (audio settings). */
+.form-field--row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.form-field--row .form-field__label {
+  font-size: var(--font-size-caption);
+  color: var(--color-text-primary);
+}
+
+.form-field--row .form-field__content {
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.form-field--error.form-field--stacked .form-field__label {
+  color: var(--color-danger);
+}

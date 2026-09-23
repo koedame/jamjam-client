@@ -1,0 +1,66 @@
+version: 2
+
+# Patch and minor updates are grouped into one PR per ecosystem per week.
+# Every major update still opens its own PR, one dependency per PR. Cargo
+# classifies a pre-1.0 minor bump (0.15 -> 0.16) as major, so those stay
+# individual too. Security updates are not grouped (`applies-to` defaults to
+# version updates) and still open immediately, one per advisory.
+#
+# Dependabot stops opening pull requests for an ecosystem once five of its PRs
+# are open (the default `open-pull-requests-limit`). Grouping keeps an
+# ecosystem at one grouped PR plus its majors.
+#
+# Across several `directories` a group still opens one PR, but an ungrouped
+# major opens one PR per directory that uses the dependency. The `*-major`
+# groups with `group-by: dependency-name` keep a major at one PR per
+# dependency covering every directory.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # The three Cargo workspaces have separate lockfiles: the root crate,
+  # the Tauri app and the e2e test crate.
+  - package-ecosystem: "cargo"
+    directories:
+      - "/"
+      - "/src-tauri"
+      - "/tests/e2e"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+      cargo-major:
+        update-types: ["major"]
+        group-by: dependency-name
+    # bincode 3.0.0 is a placeholder release whose only content is a
+    # `compile_error!`. The code uses 1.x; moving to 2.x is a migration to
+    # decide by hand.
+    ignore:
+      - dependency-name: "bincode"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/ui"
+      - "/docs-site"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+      npm-major:
+        update-types: ["major"]
+        group-by: dependency-name
+    ignore:
+      # The Node types follow the Node line that CI pins (22).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7 does not install next to i18next (peer typescript ^5).
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]

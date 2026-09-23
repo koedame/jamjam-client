@@ -1,0 +1,82 @@
+================================================================================
+jamjam - License Information
+================================================================================
+
+jamjam is licensed under the jamjam Source Available License.
+Copyright (c) 2024 koedame
+
+TERMS AND CONDITIONS
+
+1. PERMITTED USES
+   - View and read the source code for educational or transparency purposes
+   - Use Official Binaries distributed by the copyright holder
+
+2. RESTRICTIONS
+   - Modification, adaptation, or creating derivative works is NOT permitted
+   - Redistribution, sublicensing, or transfer is NOT permitted
+   - Commercial use is NOT permitted
+   - Building, compiling, or executing from source code is NOT permitted
+   - Creating competing products or services is NOT permitted
+
+3. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+For full license terms, see: https://github.com/koedame/jamjam-client/blob/main/LICENSE
+
+================================================================================
+Third-Party Components
+================================================================================
+
+This application includes the following third-party components:
+
+AUDIO
+-----
+- cpal (Apache-2.0) - https://github.com/RustAudio/cpal
+- rubato (MIT) - https://github.com/HEnquist/rubato
+
+ASYNC RUNTIME
+-------------
+- tokio (MIT) - https://github.com/tokio-rs/tokio
+
+CRYPTOGRAPHY
+------------
+- aes-gcm (Apache-2.0 OR MIT) - https://github.com/RustCrypto/AEADs
+- x25519-dalek (BSD-3-Clause) - https://github.com/dalek-cryptography/x25519-dalek
+- sha2 (MIT OR Apache-2.0) - https://github.com/RustCrypto/hashes
+- hkdf (MIT OR Apache-2.0) - https://github.com/RustCrypto/KDFs
+- rustls (Apache-2.0 OR MIT OR ISC) - https://github.com/rustls/rustls
+
+GUI FRAMEWORK
+-------------
+- tauri (Apache-2.0 OR MIT) - https://github.com/tauri-apps/tauri
+- react (MIT) - https://github.com/facebook/react
+
+NETWORKING
+----------
+- socket2 (MIT OR Apache-2.0) - https://github.com/rust-lang/socket2
+- tokio-tungstenite (MIT) - https://github.com/snapview/tokio-tungstenite
+
+SERIALIZATION
+-------------
+- serde (MIT OR Apache-2.0) - https://github.com/serde-rs/serde
+- bincode (MIT) - https://github.com/bincode-org/bincode
+
+SYNCHRONIZATION
+---------------
+- ringbuf (Apache-2.0 OR MIT) - https://github.com/agerasev/ringbuf
+- rtrb (MIT OR Apache-2.0) - https://github.com/mgeier/rtrb
+- parking_lot (MIT OR Apache-2.0) - https://github.com/Amanieu/parking_lot
+
+UTILITIES
+---------
+- clap (MIT OR Apache-2.0) - https://github.com/clap-rs/clap
+- anyhow (MIT OR Apache-2.0) - https://github.com/dtolnay/anyhow
+- thiserror (MIT OR Apache-2.0) - https://github.com/dtolnay/thiserror
+- uuid (MIT OR Apache-2.0) - https://github.com/uuid-rs/uuid
+- tracing (MIT) - https://github.com/tokio-rs/tracing
+- libloading (ISC) - https://github.com/nagisa/rust_libloading
+
+For complete third-party license information, see:
+https://github.com/koedame/jamjam-client/blob/main/THIRD_PARTY_LICENSES.md
+
+================================================================================

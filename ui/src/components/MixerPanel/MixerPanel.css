@@ -1,0 +1,45 @@
+/**
+ * MixerPanel styles
+ * jamjam brand (ui.pen Screens/Main mixerPanel): fills the center column, a
+ * heading-font label, then channel strips grouped by input/output.
+ */
+
+.mixer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  width: 100%;
+  height: 100%;
+  padding: var(--space-md);
+  background: var(--color-bg-primary);
+}
+
+.mixer-panel__title {
+  font-family: var(--font-family-heading);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.mixer-panel__channels {
+  display: flex;
+  gap: var(--space-md);
+  flex: 1;
+  min-height: 0;
+}
+
+/* A group of channel strips (input = local, output = remote).
+   Strips are content-height and top-aligned (ui.pen Screens/Main), so the
+   mixer's spare vertical space sits below the strips, not inside their border. */
+.mixer-panel__section {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: flex-start;
+}
+
+.mixer-panel__divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--color-border);
+  flex-shrink: 0;
+}

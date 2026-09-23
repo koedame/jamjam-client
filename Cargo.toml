@@ -1,0 +1,123 @@
+[package]
+name = "jamjam"
+version = "0.1.0"
+edition = "2021"
+license-file = "LICENSE"
+description = "Low-latency P2P audio communication for musicians"
+repository = "https://github.com/koedame/jamjam-client"
+
+[features]
+default = []
+opus-codec = ["dep:opus"]
+
+# E2E testing features
+e2e-loopback = []        # Audio loopback tests (no network)
+e2e-network-local = []   # Local network tests (localhost)
+e2e-remote = []          # Remote node tests
+e2e-full = ["e2e-loopback", "e2e-network-local", "e2e-remote"]
+
+[dependencies]
+# Audio I/O
+cpal = "0.18"
+
+# Audio resampling (ADR-013: receive-side resampling)
+rubato = "5.0"
+
+# Audio codec (optional; builds a bundled libopus, which needs cmake)
+opus = { version = "0.4", optional = true }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Socket options (SO_REUSEADDR)
+socket2 = { version = "0.6", features = ["all"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Real-time safe ring buffer (wait-free, lock-free)
+rtrb = "0.4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# Configuration file shared by the CLI and the GUI (ADR-027)
+toml = "1.1"
+directories = "6"
+chrono = { version = "0.4", features = ["serde"] }
+bincode = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Random number generation
+rand = "0.10"
+
+# WebSocket for signaling
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+
+# HTTP for asking the server where its signaling is (`GET /api/v1/signaling`).
+# rustls on aws-lc-rs, the same TLS stack as the WebSocket above.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+futures-util = "0.3"
+
+# TLS support
+rustls = "0.23"
+
+# Encryption for P2P data
+aes-gcm = "0.11"
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+sha2 = "0.10"
+hkdf = "0.12"
+
+# Device identity signing (ADR-024). Shares curve25519-dalek 5 with
+# x25519-dalek above, so no second copy of the curve arithmetic is linked in.
+ed25519-dalek = "3"
+
+# base32 (device identifiers) and base64 (public keys, signatures)
+data-encoding = "2"
+
+# Dynamic library loading for plugins
+libloading = "0.9"
+
+# JSON for signaling messages
+serde_json = "1"
+
+# UUID for session/peer IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# RwLock with better performance
+parking_lot = "0.12"
+
+# Local network interface discovery
+local-ip-address = "0.6"
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+
+# E2E testing
+hound = "3.5"  # WAV file handling for audio quality tests
+
+# Isolated $HOME for the CLI tests, so they never touch the real config.toml
+tempfile = "3"
+
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+
+[[bin]]
+name = "jamjam"
+path = "src/main.rs"

@@ -1,0 +1,86 @@
+/**
+ * ChatMessage Styles
+ * jamjam brand guide (ui.pen chatPanel): flat messages, no bubbles, no radius.
+ * A bold sender name + muted timestamp sit above the message body.
+ */
+
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+/* Header row: sender name + timestamp */
+.chat-message__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.chat-message__sender {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+/* Own messages: accent the sender name so you can spot your own lines. */
+.chat-message--own .chat-message__sender {
+  color: var(--color-accent);
+}
+
+/* Message body */
+.chat-message__content {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Timestamp */
+.chat-message__time {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-small);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+/* System message: inline icon + content + timestamp */
+.chat-message--system {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.chat-message__system-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+.chat-message__system-content {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-small);
+  color: var(--color-text-secondary);
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-message--system .chat-message__time {
+  font-size: var(--font-size-tiny);
+  color: var(--color-text-tertiary);
+}
+
+/* Reactions row */
+.chat-message__reactions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}

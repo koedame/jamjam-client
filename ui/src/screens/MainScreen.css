@@ -1,0 +1,360 @@
+/* MainScreen styles
+   jamjam brand (ui.pen Screens/Main, 2026-07-18): bg-page/bg-card/bg-row
+   3-tier surfaces, accent-blue for interactive elements, brand yellow
+   reserved for the logo only, 1px borders, radius-control (8px) on
+   controls, radius-card (14px) on dialogs, subtle shadows on buttons/dialogs. */
+
+.main-screen {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-sans);
+}
+
+/* ===================================================================
+   Disconnected / connecting path (ConnectionPanel) — DO NOT CHANGE.
+   The join screen renders its own header/padding and the window is sized
+   to match it (see MainScreen.tsx resize effect), so it sits flush.
+   =================================================================== */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xl);
+  gap: var(--space-lg);
+}
+
+.main-content--flush {
+  padding: 0;
+  gap: 0;
+}
+
+.main-connection-panel-wrapper {
+  width: 100%;
+  max-width: 600px;
+  flex: 1;
+  min-height: 400px;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+/* ===================================================================
+   Connected screen — header
+   =================================================================== */
+.main-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  height: 48px;
+  padding: 0 var(--space-md);
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.main-header__logo {
+  font-family: var(--font-family-heading);
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-brand);
+}
+
+.main-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.main-header__icon-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.main-header__icon-btn:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-text-primary);
+}
+
+.main-header__icon-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* ===================================================================
+   Connected screen — 3-column body
+   =================================================================== */
+.main-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* --- Room / participants sidebar --- */
+.room-sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.room-sidebar__room {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.room-sidebar__room-label {
+  font-family: var(--font-family-heading);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.room-sidebar__code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 var(--space-md);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+
+.room-sidebar__code-text {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-accent);
+  letter-spacing: 0.1em;
+}
+
+.room-sidebar__copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.room-sidebar__copy:hover {
+  color: var(--color-text-primary);
+}
+
+.room-sidebar__copy:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.room-sidebar__divider {
+  flex-shrink: 0;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.room-sidebar__participants {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  overflow: hidden;
+}
+
+.room-sidebar__participants-label {
+  font-size: var(--font-size-small);
+  color: var(--color-text-secondary);
+}
+
+.room-sidebar__participant-list {
+  flex: 1;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  overflow-y: auto;
+}
+
+.participant {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  height: 36px;
+  padding: 0 var(--space-sm);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-control);
+}
+
+.participant__info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.participant__icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--color-success);
+}
+
+.participant__icon--self {
+  color: var(--color-accent);
+}
+
+.participant__name {
+  font-size: var(--font-size-caption);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.participant__latency {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.participant__latency-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-tiny);
+  color: var(--color-text-secondary);
+}
+
+.participant__latency-arrow {
+  color: var(--color-text-tertiary);
+}
+
+.room-sidebar__leave {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  height: 40px;
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-control);
+  color: var(--color-danger);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.room-sidebar__leave:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.room-sidebar__leave:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* --- Mixer column --- */
+.main-mixer-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* --- Chat column (docked) --- */
+.main-chat-column {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ===================================================================
+   Connected screen — status footer
+   =================================================================== */
+.main-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 var(--space-md);
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border);
+}
+
+.main-footer__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.main-footer__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-success);
+}
+
+.main-footer__status-text {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-primary);
+}
+
+/* Leave-confirm dialog: extracted to components/LeaveDialog (own CSS). */
+
+/* Bandwidth and reconnection notices, shown next to the connection indicator */
+.main-footer__warning {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.main-footer__reconnect {
+  margin-left: var(--space-2, 8px);
+  padding: var(--space-1, 4px) var(--space-3, 12px);
+  border: 1px solid var(--color-border, #444);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-surface, #2a2a2a);
+  color: var(--color-text, #eee);
+  cursor: pointer;
+}
+
+.main-footer__reconnect:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

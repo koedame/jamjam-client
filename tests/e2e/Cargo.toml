@@ -1,0 +1,72 @@
+[package]
+name = "jamjam-e2e-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "End-to-end test infrastructure for jamjam"
+
+# Keep this package independent from root workspace
+[workspace]
+
+[dependencies]
+# Core jamjam library
+jamjam = { path = "../.." }
+
+# Async runtime
+tokio = { version = "1", features = ["full", "test-util"] }
+
+# Audio file handling
+hound = "3.5"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# UUID for test identification
+uuid = { version = "1.0", features = ["v4"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+
+# Process management for multi-node tests
+which = "6"
+
+# GUI E2E page object model (ADR-025): HTTP client for the app's control
+# channel, plus an isolated $HOME per app launch. Test-only crate, so these
+# never reach a product binary.
+# Generating a known signal into the loopback audio device (ADR-025).
+# Same version the app uses, so device naming matches what it sees.
+cpal = "0.18"
+ureq = { version = "2", features = ["json"] }
+tempfile = "3"
+# Writing a known device identity into the throwaway $HOME, in the app's own
+# file format (base64 key). Same crate and version the app uses for it.
+data-encoding = "2"
+
+# SSH for remote node control (optional)
+# ssh2 = { version = "0.9", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+# Enable loopback tests through the software pipeline
+loopback = []
+# Enable localhost network tests
+network-local = []
+# Enable remote multi-node tests
+remote = []
+# Enable GUI scenarios driving the real Tauri app (ADR-025). Requires the app
+# built with --features e2e-control.
+gui = []
+# Full test suite
+full = ["loopback", "network-local", "remote", "gui"]
+
+[[bin]]
+name = "generate_fixtures"
+path = "src/bin/generate_fixtures.rs"

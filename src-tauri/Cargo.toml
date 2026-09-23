@@ -1,0 +1,88 @@
+[package]
+name = "jamjam-app"
+version = "0.1.0"
+description = "Low-latency P2P audio communication for musicians"
+authors = ["jamjam developers"]
+edition = "2021"
+license-file = "../LICENSE"
+
+[lib]
+name = "jamjam_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Core jamjam library for network functionality
+jamjam = { path = ".." }
+tokio = { version = "1", features = ["sync", "net"] }
+uuid = { version = "1", features = ["v4"] }
+
+# Real-time safe ring buffer (wait-free, lock-free)
+rtrb = "0.4"
+
+# Configuration persistence
+toml = "1.1"
+directories = "6"
+chrono = { version = "0.4", features = ["serde"] }
+
+# base64 for the stored device identity secret key (ADR-024)
+data-encoding = "2"
+
+# GUI E2E control channel (ADR-025, feature = "e2e-control"). Optional so a
+# default build links none of axum's dependency tree.
+axum = { version = "0.8", optional = true }
+
+# Diagnostic log file in the OS log directory (ADR-036). `log-always` makes
+# every `tracing` event - this crate's and the core library's - also reach the
+# `log` crate, which is what tauri-plugin-log writes to the file.
+tracing = { version = "0.1", features = ["log-always"] }
+tauri-plugin-log = "2"
+
+tauri-plugin-deep-link = "2.4.9"
+
+[dev-dependencies]
+# Isolated config/identity directories for persistence tests
+tempfile = "3"
+
+# Mock WebSocket server for the test that drops the connection and checks
+# the client reconnects automatically. Pinned to the same version the
+# jamjam library uses so client and test server agree on the wire protocol.
+tokio-tungstenite = "0.30"
+
+# tauri::test::mock_app(), for calling a #[tauri::command] directly in a
+# test without a real window.
+tauri = { version = "2", features = ["test"] }
+
+# Platform-specific dependencies for real-time thread priority
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_System_Threading"] }
+
+[workspace]
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+
+[lints]
+workspace = true
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# GUI E2E control channel (ADR-025). Deliberately absent from `default`:
+# enabling it compiles in a loopback HTTP server that can read the app's
+# rendered DOM. tests/e2e/tests/release_build_guard.rs asserts this stays out
+# of the default set.
+e2e-control = ["dep:axum", "tokio/net", "tokio/rt"]

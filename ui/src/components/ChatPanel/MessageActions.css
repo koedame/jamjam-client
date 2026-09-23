@@ -1,0 +1,15 @@
+/**
+ * MessageActions Styles
+ */
+
+.message-actions {
+  position: relative;
+}
+
+.message-actions__picker {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: var(--space-xs);
+  z-index: var(--z-popover);
+}

@@ -1,0 +1,97 @@
+/**
+ * PanSlider styles
+ * jamjam brand (ui.pen Molecules/Slider/Pan): recessed near-black box, value
+ * label on top, center detent mark, green fill, yellow thumb. No border-radius.
+ */
+
+.pan-slider {
+  position: relative;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-xs);
+  background: var(--color-bg-tertiary);
+  border: 2px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.pan-slider--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.pan-slider__value {
+  font-size: 10px;
+  font-family: var(--font-family-mono);
+  color: var(--color-text-secondary);
+  line-height: 1;
+  margin-top: 1px;
+}
+
+/* Horizontal track sits in the lower part of the box, clear of the value. */
+.pan-slider__track {
+  position: absolute;
+  left: var(--space-xs);
+  right: var(--space-xs);
+  bottom: 3px;
+  height: 15px;
+}
+
+/* Track line: intentionally near-invisible groove, matching ui.pen. */
+.pan-slider__track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--color-border-subtle);
+}
+
+.pan-slider__center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+  background: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.pan-slider__indicator {
+  position: absolute;
+  top: 50%;
+  height: 5px;
+  transform: translateY(-50%);
+  background: var(--color-success);
+  pointer-events: none;
+}
+
+.pan-slider__thumb {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 15px;
+  transform: translate(-50%, -50%);
+  background: var(--color-accent);
+  pointer-events: none;
+}
+
+.pan-slider__input {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 24px;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.pan-slider__input:focus-visible ~ .pan-slider__track .pan-slider__thumb {
+  box-shadow: var(--shadow-focus);
+}

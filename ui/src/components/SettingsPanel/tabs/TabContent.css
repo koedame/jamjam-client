@@ -1,0 +1,154 @@
+/**
+ * TabContent shared styles - jamjam brand (ui.pen Screens/Settings).
+ */
+
+.tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+/* Section heading (Space Grotesk, ui.pen DeviceTitle / GeneralTitle). */
+.tab-content__title {
+  margin: 0;
+  font-family: var(--font-family-heading);
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.tab-content__divider {
+  height: 1px;
+  width: 100%;
+  background: var(--color-border);
+}
+
+/* Primary (accent) button, e.g. Run Diagnostics. */
+.tab-content__primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  align-self: flex-start;
+  min-width: 200px;
+  height: 40px;
+  padding: 0 var(--space-md);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-control);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.tab-content__primary-button:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.tab-content__primary-button:active:not(:disabled) {
+  background: var(--color-accent-active);
+  border-color: var(--color-accent-active);
+}
+
+.tab-content__primary-button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* Channel pair: two channel selects side by side. */
+.channel-pair {
+  display: flex;
+  gap: var(--space-md);
+  width: 100%;
+}
+
+/* Segmented toggle (Transmit Channels: Mono / Stereo). */
+.segmented {
+  display: inline-flex;
+  gap: var(--space-sm);
+}
+
+.segmented__option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 80px;
+  height: 32px;
+  padding: 0 var(--space-sm);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-small);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.segmented__option:hover:not(:disabled):not(.segmented__option--active) {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-hover);
+}
+
+.segmented__option--active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.segmented__option:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.segmented__option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Latency summary card (computed from buffer size / sample rate). */
+.latency-card {
+  display: flex;
+  gap: var(--space-lg);
+  padding: var(--space-md);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+}
+
+.latency-card__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.latency-card__label {
+  font-size: var(--font-size-tiny);
+  color: var(--color-text-secondary);
+}
+
+.latency-card__value {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+}
+
+.latency-card__value--good {
+  color: var(--color-success);
+}
+
+.latency-card__value--warn {
+  color: var(--color-warning);
+}
+
+.latency-card__value--bad {
+  color: var(--color-danger);
+}
+
+.latency-card__value--total {
+  color: var(--color-accent);
+}

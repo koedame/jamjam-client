@@ -1,0 +1,49 @@
+/**
+ * ReactionButton Styles
+ * MixerPanel design guide: accent-blue for active state, radius-control
+ */
+
+.reaction-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 2px var(--space-sm);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+  font-family: inherit;
+}
+
+.reaction-button:hover:not(:disabled) {
+  background-color: var(--color-bg-hover);
+}
+
+.reaction-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.reaction-button--active {
+  background-color: var(--color-bg-tertiary);
+}
+
+.reaction-button--active:hover:not(:disabled) {
+  background-color: var(--color-bg-hover);
+}
+
+.reaction-button__emoji {
+  font-size: var(--font-size-body);
+  line-height: 1;
+}
+
+.reaction-button__count {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-small);
+  color: var(--color-text-secondary);
+}
+
+.reaction-button--active .reaction-button__count {
+  color: var(--color-accent);
+}

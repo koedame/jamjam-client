@@ -1,0 +1,89 @@
+/**
+ * StereoFader styles
+ * jamjam brand (ui.pen Molecules/Fader/Stereo): recessed 4px track, green glow
+ * fill from the bottom, light rectangular thumb, 0 dB reference line.
+ */
+
+.stereo-fader {
+  position: relative;
+  width: 44px;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.stereo-fader--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Recessed vertical track (the only place ui.pen uses a 2px radius). */
+.stereo-fader__track {
+  position: relative;
+  width: 4px;
+  height: 100%;
+  background: var(--color-bg-tertiary);
+  border-radius: 2px;
+}
+
+/* Green glow fill grows from the bottom up to the thumb. */
+.stereo-fader__glow {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  background: var(--color-success);
+  border-radius: 2px;
+}
+
+/* 0 dB reference line, wider than the track. */
+.stereo-fader__zero {
+  position: absolute;
+  left: 50%;
+  width: 36px;
+  height: 2px;
+  transform: translate(-50%, 50%);
+  background: var(--color-text-tertiary);
+}
+
+.stereo-fader__thumb {
+  position: absolute;
+  left: 50%;
+  width: 36px;
+  height: 20px;
+  transform: translate(-50%, 50%);
+  background: var(--color-text-primary);
+  border: 1px solid var(--color-text-tertiary);
+  pointer-events: none;
+}
+
+/* Center grip line on the thumb. */
+.stereo-fader__thumb::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+  background: var(--color-bg-elevated);
+}
+
+/* Hidden range input covers the whole fader for interaction. */
+.stereo-fader__input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  /* Vertical orientation */
+  writing-mode: vertical-lr;
+  direction: rtl;
+  z-index: 2;
+}
+
+.stereo-fader__input:focus-visible ~ .stereo-fader__thumb {
+  box-shadow: var(--shadow-focus);
+}

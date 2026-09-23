@@ -1,0 +1,24 @@
+/**
+ * AudioQualityBadge styles
+ * jamjam brand (ui.pen Atoms/Badge/AudioQuality): recessed near-black chip,
+ * monospace secondary text, radius-control (8px).
+ */
+
+.audio-quality-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-bg-tertiary);
+  font-size: 10px;
+  font-family: var(--font-family-mono);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.audio-quality-badge__rate,
+.audio-quality-badge__separator,
+.audio-quality-badge__channels {
+  color: var(--color-text-secondary);
+}

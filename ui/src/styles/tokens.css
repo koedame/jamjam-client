@@ -1,0 +1,390 @@
+/**
+ * Design Tokens - jamjam UI
+ *
+ * All styling should use these CSS custom properties.
+ * This enables theme switching (dark/light) and design consistency.
+ */
+
+/* ===================================================================
+   GLOBAL RESET
+   =================================================================== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background-color: var(--color-bg-primary);
+  font-family: var(--font-family-sans);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+/* ===================================================================
+   COLOR TOKENS - Dark Theme (Default)
+   =================================================================== */
+:root,
+:root[data-theme="dark"] {
+  /* === Background ===
+     jamjam brand palette (ui.pen, Pencil schema 2.14, 2026-07-18改訂).
+     page < card (card is lighter than page) < row (row is the darkest,
+     used for recessed inputs/meters). */
+  --color-bg-primary: #1C1C1E;
+  --color-bg-secondary: #2C2C2E;
+  --color-bg-tertiary: #141414;
+  --color-bg-elevated: #48484A;
+  --color-bg-hover: #48484A;
+  --color-bg-overlay: rgba(0, 0, 0, 0.6);
+  --color-bg-error: rgba(255, 69, 58, 0.1);
+
+  /* === Accent === */
+  --color-accent: #0A84FF;
+  --color-accent-hover: #3D9FFF;
+  --color-accent-active: #0A6ACC;
+  /* Secondary brand accent, currently reserved for solo-active highlighting. */
+  --color-accent-secondary: #FF9F0A;
+  /* Brand color (ui.pen: yellow-primary). Logo/wordmark only - never used
+     for actions or backgrounds (see design-guide.md). */
+  --color-brand: #FFD60A;
+
+  /* === Semantic === */
+  --color-success: #30D158;
+  --color-success-bg: rgba(48, 209, 88, 0.1);
+  --color-warning: #FFD60A;
+  --color-warning-bg: rgba(255, 214, 10, 0.1);
+  --color-danger: #FF453A;
+  --color-danger-bg: rgba(255, 69, 58, 0.1);
+
+  /* === Text === */
+  --color-text-primary: #F5F5F7;
+  --color-text-secondary: #98989D;
+  --color-text-tertiary: #6E6E73;
+  --color-text-muted: #6E6E73;
+  --color-text-disabled: #6E6E73;
+  --color-text-inverse: #F5F5F7;
+
+  /* === Border === */
+  --color-border: #38383A;
+  --color-border-default: #38383A;
+  --color-border-subtle: #141414;
+  --color-border-focus: #0A84FF;
+  --color-border-hover: #48484A;
+
+  /* === Connection Status === */
+  --color-status-disconnected: #6E6E73;
+  --color-status-connecting: #FFD60A;
+  --color-status-connected: #30D158;
+  --color-status-unstable: #FFD60A;
+  --color-status-error: #FF453A;
+  --color-status-success: #30D158;
+  --color-status-warning: #FFD60A;
+
+  /* === Mixer === */
+  --color-meter-low: #30D158;
+  --color-meter-mid: #FFD60A;
+  --color-meter-high: #FF453A;
+  --color-mute-active: #FF453A;
+  --color-solo-active: #FF9F0A;
+}
+
+/* ===================================================================
+   COLOR TOKENS - Light Theme
+   No ui.pen light-mode spec exists (jamjam is a dark-only brand for now,
+   like most pro-audio tools), so "light" intentionally mirrors "dark"
+   exactly rather than keeping a stale palette. The theme switcher UI stays
+   functional; only the light *values* changed.
+   =================================================================== */
+:root[data-theme="light"] {
+  --color-bg-primary: #1C1C1E;
+  --color-bg-secondary: #2C2C2E;
+  --color-bg-tertiary: #141414;
+  --color-bg-elevated: #48484A;
+  --color-bg-hover: #48484A;
+  --color-bg-overlay: rgba(0, 0, 0, 0.6);
+  --color-bg-error: rgba(255, 69, 58, 0.1);
+  --color-accent: #0A84FF;
+  --color-accent-hover: #3D9FFF;
+  --color-accent-active: #0A6ACC;
+  --color-accent-secondary: #FF9F0A;
+  --color-brand: #FFD60A;
+  --color-success: #30D158;
+  --color-success-bg: rgba(48, 209, 88, 0.1);
+  --color-warning: #FFD60A;
+  --color-warning-bg: rgba(255, 214, 10, 0.1);
+  --color-danger: #FF453A;
+  --color-danger-bg: rgba(255, 69, 58, 0.1);
+  --color-text-primary: #F5F5F7;
+  --color-text-secondary: #98989D;
+  --color-text-tertiary: #6E6E73;
+  --color-text-muted: #6E6E73;
+  --color-text-disabled: #6E6E73;
+  --color-text-inverse: #F5F5F7;
+  --color-border: #38383A;
+  --color-border-default: #38383A;
+  --color-border-subtle: #141414;
+  --color-border-focus: #0A84FF;
+  --color-border-hover: #48484A;
+  --color-status-disconnected: #6E6E73;
+  --color-status-connecting: #FFD60A;
+  --color-status-connected: #30D158;
+  --color-status-unstable: #FFD60A;
+  --color-status-error: #FF453A;
+  --color-status-success: #30D158;
+  --color-status-warning: #FFD60A;
+  --color-meter-low: #30D158;
+  --color-meter-mid: #FFD60A;
+  --color-meter-high: #FF453A;
+  --color-mute-active: #FF453A;
+  --color-solo-active: #FF9F0A;
+}
+
+/* ===================================================================
+   SYSTEM PREFERENCE DETECTION
+   =================================================================== */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    /* Mirrors dark (see note above on :root[data-theme="light"]) */
+    --color-bg-primary: #1C1C1E;
+    --color-bg-secondary: #2C2C2E;
+    --color-bg-tertiary: #141414;
+    --color-bg-elevated: #48484A;
+    --color-bg-hover: #48484A;
+    --color-bg-overlay: rgba(0, 0, 0, 0.6);
+    --color-bg-error: rgba(255, 69, 58, 0.1);
+    --color-accent: #0A84FF;
+    --color-accent-hover: #3D9FFF;
+    --color-accent-active: #0A6ACC;
+    --color-accent-secondary: #FF9F0A;
+    --color-brand: #FFD60A;
+    --color-success: #30D158;
+    --color-success-bg: rgba(48, 209, 88, 0.1);
+    --color-warning: #FFD60A;
+    --color-warning-bg: rgba(255, 214, 10, 0.1);
+    --color-danger: #FF453A;
+    --color-danger-bg: rgba(255, 69, 58, 0.1);
+    --color-text-primary: #F5F5F7;
+    --color-text-secondary: #98989D;
+    --color-text-tertiary: #6E6E73;
+    --color-text-muted: #6E6E73;
+    --color-text-disabled: #6E6E73;
+    --color-text-inverse: #F5F5F7;
+    --color-border: #38383A;
+    --color-border-default: #38383A;
+    --color-border-subtle: #141414;
+    --color-border-focus: #0A84FF;
+    --color-border-hover: #48484A;
+    --color-status-disconnected: #6E6E73;
+    --color-status-connecting: #FFD60A;
+    --color-status-connected: #30D158;
+    --color-status-unstable: #FFD60A;
+    --color-status-error: #FF453A;
+    --color-status-success: #30D158;
+    --color-status-warning: #FFD60A;
+    --color-meter-low: #30D158;
+    --color-meter-mid: #FFD60A;
+    --color-meter-high: #FF453A;
+    --color-mute-active: #FF453A;
+    --color-solo-active: #FF9F0A;
+  }
+}
+
+/* ===================================================================
+   TYPOGRAPHY TOKENS
+   =================================================================== */
+:root {
+  /* === Font Family === */
+  --font-family-sans:
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Hiragino Sans',
+    'Hiragino Kaku Gothic ProN',
+    'Noto Sans JP',
+    sans-serif;
+
+  /* Headings (ui.pen: --font-heading). Same as body - no distinct display
+     face (Space Grotesk was retired with the 2026-07-18 rebrand). */
+  --font-family-heading:
+    'Inter',
+    var(--font-family-sans);
+
+  --font-family-mono:
+    'Roboto Mono',
+    'SF Mono',
+    'Fira Code',
+    Consolas,
+    'Courier New',
+    monospace;
+
+  /* === Font Size === */
+  --font-size-h1: 24px;
+  --font-size-h2: 18px;
+  --font-size-h3: 16px;
+  --font-size-body: 14px;
+  --font-size-caption: 12px;
+  --font-size-small: 11px;
+  --font-size-tiny: 9px;
+
+  /* === Font Weight === */
+  --font-weight-bold: 700;
+  --font-weight-semibold: 600;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+
+  /* === Line Height === */
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* === Letter Spacing === */
+  --letter-spacing-tight: -0.02em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide: 0.02em;
+}
+
+/* ===================================================================
+   SPACING TOKENS
+   =================================================================== */
+:root {
+  /* === Base Unit === */
+  --space-unit: 4px;
+
+  /* === Spacing Scale === */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* === Component Padding === */
+  --padding-button: var(--space-sm) var(--space-md);
+  --padding-card: var(--space-md);
+  --padding-input: var(--space-sm) var(--space-sm);
+  --padding-modal: var(--space-lg);
+
+  /* === Layout === */
+  --gap-xs: var(--space-xs);
+  --gap-sm: var(--space-sm);
+  --gap-md: var(--space-md);
+  --gap-lg: var(--space-lg);
+}
+
+/* ===================================================================
+   BORDER RADIUS TOKENS
+   ui.pen (2026-07-18) moved from "no radius" to a 2-tier scale. Keep the
+   legacy sm/md/lg/xl names as aliases so existing component CSS using them
+   keeps working, but new code should reference --radius-control/-card
+   directly (see design-tokens.md).
+   =================================================================== */
+:root {
+  --radius-control: 8px;
+  --radius-card: 14px;
+  --radius-full: 9999px;
+
+  --radius-none: 0;
+  --radius-sm: var(--radius-control);
+  --radius-md: var(--radius-control);
+  --radius-lg: var(--radius-card);
+  --radius-xl: var(--radius-card);
+}
+
+/* ===================================================================
+   SHADOW TOKENS
+   Focus ring, button lift, and modal/toast elevation are the only
+   permitted shadows (see design-guide.md).
+   =================================================================== */
+:root {
+  --shadow-button: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-modal: 0 4px 24px rgba(0, 0, 0, 0.5);
+  --shadow-sm: var(--shadow-button);
+  --shadow-md: var(--shadow-modal);
+  --shadow-lg: var(--shadow-modal);
+  --shadow-xl: var(--shadow-modal);
+
+  /* Focus ring */
+  --shadow-focus: 0 0 0 3px rgba(10, 132, 255, 0.4);
+}
+
+/* ===================================================================
+   ANIMATION TOKENS
+   =================================================================== */
+:root {
+  /* === Duration === */
+  --duration-instant: 0ms;
+  --duration-fast: 100ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --duration-slower: 500ms;
+
+  /* === Easing === */
+  --ease-default: ease-out;
+  --ease-out: ease-out;
+  --ease-in: ease-in;
+  --ease-in-out: ease-in-out;
+  --ease-bounce: cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+  /* === Transition Presets === */
+  --transition-fast: var(--duration-fast) var(--ease-default);
+  --transition-normal: var(--duration-normal) var(--ease-default);
+  --transition-slow: var(--duration-slow) var(--ease-default);
+}
+
+/* Accessibility: respect motion preference */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant: 0ms;
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+    --duration-slower: 0ms;
+  }
+}
+
+/* ===================================================================
+   Z-INDEX TOKENS
+   =================================================================== */
+:root {
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-popover: 500;
+  --z-tooltip: 600;
+  --z-toast: 700;
+}
+
+/* ===================================================================
+   RESPONSIVE TOKENS
+   =================================================================== */
+:root {
+  /* === Breakpoints === */
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+
+  /* === Container === */
+  --container-sm: 640px;
+  --container-md: 768px;
+  --container-lg: 1024px;
+  --container-xl: 1200px;
+}

@@ -1,0 +1,52 @@
+# Build outputs
+/target
+**/target
+dist/
+build/
+.cache/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# IDE settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Claude Code local/session-specific files
+.claude/settings.local.json
+.claude/logs/
+.claude/state/
+.claude/memory/session-log.md
+**/.claude/logs/
+**/.claude/state/
+
+# Log files
+*.log
+
+# act local testing
+.github/act/.secrets
+
+# Docusaurus
+docs-site/node_modules/
+docs-site/.docusaurus/
+docs-site/build/
+
+# Storybook
+ui/storybook-static/
+
+# Playwright MCP
+.playwright-mcp/

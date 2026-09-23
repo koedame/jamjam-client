@@ -1,0 +1,57 @@
+jamjam Source Available License
+
+Copyright (c) 2024 koedame
+
+TERMS AND CONDITIONS
+
+1. DEFINITIONS
+
+"Software" means the jamjam source code, documentation, and any associated
+files in this repository.
+
+"Official Binary" means executable files distributed by the copyright holder
+through official channels (e.g., GitHub Releases).
+
+"You" means any person or entity exercising rights under this License.
+
+2. PERMITTED USES
+
+You are permitted to:
+- View and read the Software's source code for educational or transparency purposes
+- Use Official Binaries distributed by the copyright holder
+
+3. RESTRICTIONS
+
+You are NOT permitted to:
+- Modify, adapt, or create derivative works of the Software
+- Redistribute, sublicense, or transfer the Software or any part thereof
+- Use the Software for commercial purposes
+- Build, compile, or execute the Software from source code
+- Create competing products or services based on the Software
+- Remove or alter any copyright notices or this License
+
+4. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+5. TERMINATION
+
+This License automatically terminates if You violate any of its terms.
+Upon termination, You must destroy all copies of the Software in Your possession.
+
+6. THIRD-PARTY COMPONENTS
+
+The Software includes third-party components under their respective licenses.
+See THIRD_PARTY_LICENSES.md for details. The use of Official Binaries includes
+the right to use these components under their original licenses.
+
+7. CONTACT
+
+For licensing inquiries, please contact the copyright holder through the
+repository's issue tracker: https://github.com/koedame/jamjam-client/issues
