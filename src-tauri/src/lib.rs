@@ -4,6 +4,7 @@
 //! and multi-window management.
 
 mod audio;
+mod audio_slot;
 #[cfg(feature = "debug-tools")]
 mod audio_tap;
 mod config;
@@ -16,6 +17,8 @@ mod e2e_control;
 mod help_link;
 mod logging;
 mod mixer;
+mod report_problem;
+mod restart;
 mod rpc;
 mod session;
 mod settings;
@@ -24,6 +27,7 @@ mod signaling;
 mod streaming;
 mod updater;
 mod usage;
+mod watchdog;
 mod windows;
 
 use config::ConfigState;
@@ -115,6 +119,13 @@ pub fn run() {
     // The panic hook goes in after the logger's, so both run on a panic.
     let usage = UsageState::new(&startup_config, &app.package_info().version.to_string());
     usage.reporter().install_panic_hook();
+    // Read before the watchdog below writes this launch's own running
+    // marker, which would otherwise overwrite what the previous one left.
+    // Local and unconditional: whether it is sent depends on
+    // `usage_reporting`, decided inside (usage.rs, ADR-056).
+    let previous_incident = watchdog::previous_incident(usage.reporter());
+    usage.apply_previous_incident(app.handle(), previous_incident);
+    let watchdog = watchdog::Watchdog::install(usage.reporter().clone());
     if usage.reporter().is_enabled() {
         usage.report_launch(startup_config);
     }
@@ -143,11 +154,18 @@ pub fn run() {
     #[cfg(feature = "debug-remote")]
     debug_remote::spawn(app.handle().clone());
 
-    app.run(|handle, event| {
-        if let tauri::RunEvent::Exit = event {
+    app.run(move |handle, event| match event {
+        tauri::RunEvent::ExitRequested { code, .. } => {
+            tracing::info!("Exit requested (code {:?})", code);
+        }
+        tauri::RunEvent::Exit => {
+            let _stage = watchdog.enter_stage(jamjam::telemetry::HangStage::AppExit);
             handle
                 .state::<UsageState>()
                 .app_exiting(&handle.state::<StreamingState>());
+            drop(_stage);
+            watchdog.mark_clean_exit();
         }
+        _ => {}
     });
 }

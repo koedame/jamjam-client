@@ -16,7 +16,7 @@ mod roster;
 use std::sync::MutexGuard;
 use std::time::Duration;
 
-use jamjam::network::RoomInfo;
+use jamjam::network::{server_clock_offset_secs, NetworkError, RoomInfo, CLOCK_SKEW_NOTICE_SECS};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use uuid::Uuid;
@@ -42,6 +42,13 @@ const RECONNECT_BASE_DELAY: Duration = if cfg!(test) {
     Duration::from_millis(10)
 } else {
     Duration::from_secs(2)
+};
+/// How often the server's time is looked at again while the computer's clock
+/// is what keeps the app from connecting.
+const CLOCK_RECHECK_INTERVAL: Duration = if cfg!(test) {
+    Duration::from_millis(100)
+} else {
+    Duration::from_secs(10)
 };
 /// How often the room's events are read.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -388,7 +395,7 @@ fn test_room_code_of(rooms: &[RoomInfo]) -> Option<String> {
     rooms
         .iter()
         .find(|room| room.test_room)
-        .map(|room| room.invite_code.clone())
+        .map(|room| room.invite_code.to_string())
 }
 
 fn peer_name<R: Runtime>(app: &AppHandle<R>) -> String {
@@ -522,7 +529,14 @@ async fn connect<R: Runtime>(app: &AppHandle<R>, epoch: u64) -> Result<Snapshot,
     let conn = match connected {
         None => return Ok(state.snapshot()),
         Some(Ok(conn)) => conn,
-        Some(Err(e)) => return fail_unless_ended(app, epoch, e),
+        Some(Err(e)) => {
+            let clock_is_off = matches!(e, NetworkError::ClockSkew { .. });
+            let failed = fail_unless_ended(app, epoch, e.to_string());
+            if clock_is_off && state.epoch() == epoch {
+                connect_again_when_the_clock_is_right(app.clone(), epoch);
+            }
+            return failed;
+        }
     };
     if state.epoch() != epoch {
         disconnect(app, conn).await;
@@ -550,6 +564,28 @@ async fn connect<R: Runtime>(app: &AppHandle<R>, epoch: u64) -> Result<Snapshot,
         }
         Some(Err(e)) => fail_unless_ended(app, epoch, e),
     }
+}
+
+/// After the server refused the connection because this computer's clock is
+/// off, connects again once the clock agrees with the server's, so putting the
+/// clock right is all the person has to do. Ends when the step is ended
+/// (the person connected again by hand, or left), as `epoch` says.
+fn connect_again_when_the_clock_is_right<R: Runtime>(app: AppHandle<R>, epoch: u64) {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<SessionState>();
+        loop {
+            pause(&state, epoch, CLOCK_RECHECK_INTERVAL).await;
+            if state.epoch() != epoch {
+                return;
+            }
+            let server_url = app.state::<ConfigState>().server_url();
+            match server_clock_offset_secs(&server_url).await {
+                Some(offset) if offset.abs() < CLOCK_SKEW_NOTICE_SECS => break,
+                _ => {}
+            }
+        }
+        let _ = connect(&app, epoch).await;
+    });
 }
 
 /// What entering a room changes: the room, and the audio it starts.
@@ -645,19 +681,6 @@ async fn join<R: Runtime>(app: &AppHandle<R>, code: String) -> Result<Snapshot, 
         Ok(result) => result,
         Err(e) => return fail(app, e),
     };
-
-    // Saved under the code the person could join with again. `code` is what
-    // they typed, which is either that code already or a room id from a link.
-    let history_code = if result.invite_code.is_empty() {
-        code.as_str()
-    } else {
-        result.invite_code.as_str()
-    };
-    if let Err(e) =
-        crate::config::config_add_connection_history(history_code.to_string(), None, app.state())
-    {
-        tracing::error!("Failed to save to history: {}", e);
-    }
 
     let audio = enter_room(app, conn, result, name, "");
     run_audio(app, conn, audio).await;
@@ -793,7 +816,7 @@ async fn try_reconnect<R: Runtime>(
     .await;
     let conn = match connected {
         None => return Ok(()),
-        Some(conn) => conn?,
+        Some(conn) => conn.map_err(|e| e.to_string())?,
     };
     if state.epoch() != epoch {
         disconnect(app, conn).await;
@@ -876,18 +899,6 @@ fn spawn_pump<R: Runtime>(app: AppHandle<R>, conn: u32) {
     });
 }
 
-/// Ends the connection `conn` and starts over from the server, unless `conn`
-/// is no longer the session's.
-fn start_over<R: Runtime>(app: &AppHandle<R>, conn: u32) {
-    let Some(epoch) = app.state::<SessionState>().next_epoch_of(conn) else {
-        return;
-    };
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = connect(&app, epoch).await;
-    });
-}
-
 /// Ends the connection `conn` and gets it back, rejoining the room the app is
 /// in, unless `conn` is no longer the session's.
 fn get_connection_back<R: Runtime>(app: &AppHandle<R>, conn: u32) {
@@ -955,31 +966,9 @@ async fn handle_events<R: Runtime>(
                 });
                 run_audio(app, conn, audio).await;
             }
-            SignalingEvent::RoomClosed { reason } => {
-                // The server closes this connection right after sending it, so
-                // the connection is dead: it cannot be used to leave, create or
-                // join. Start over with a new one.
-                tracing::info!("Room session ended (room closed): {}", reason);
-                start_over(app, conn);
-                return false;
-            }
-            SignalingEvent::Kicked { peer_id, reason } => {
-                // Told to the whole room, but the server closes only the
-                // connection of the peer removed.
-                let is_self = state
-                    .lock()
-                    .room
-                    .as_ref()
-                    .is_some_and(|room| room.peer_id == peer_id);
-                if is_self {
-                    tracing::info!("Room session ended (removed): {}", reason);
-                    start_over(app, conn);
-                    return false;
-                }
-            }
             SignalingEvent::ConnectionLost { reason } => {
-                // The server did not close the room first (network blip, proxy
-                // reset, server restart): the connection is dead either way.
+                // A network blip, a proxy reset or a server restart: the
+                // connection is dead either way.
                 tracing::warn!("Signaling connection lost: {}", reason);
                 get_connection_back(app, conn);
                 return false;
@@ -1096,11 +1085,17 @@ mod tests {
     struct ServerLog {
         /// The message types each connection sent, oldest first.
         received: Vec<(usize, String)>,
+        /// The `data` of every `CreateRoom` and `JoinRoom` received.
+        entered: Vec<serde_json::Value>,
         /// Ways to talk to each open connection.
         connections: Vec<mpsc::UnboundedSender<Say>>,
         /// A message type that makes the server drop the connection instead
         /// of answering.
         close_on: Option<String>,
+        /// When set, the server's clock is this many seconds behind the real
+        /// time, and it refuses every WebSocket handshake with a 401, as it
+        /// does a device whose clock differs from its own.
+        clock_behind_secs: Option<i64>,
     }
 
     enum Say {
@@ -1160,6 +1155,11 @@ mod tests {
                 .count()
         }
 
+        /// The `data` of the `CreateRoom` and `JoinRoom` messages received, oldest first.
+        fn entering_messages(&self) -> Vec<serde_json::Value> {
+            self.log.lock().unwrap().entered.clone()
+        }
+
         fn say(&self, connection: usize, message: String) {
             let _ = self.log.lock().unwrap().connections[connection].send(Say::Message(message));
         }
@@ -1167,6 +1167,12 @@ mod tests {
         /// From now on, drop the connection of whoever sends a `kind` message.
         fn drop_the_connection_when_sent(&self, kind: &str) {
             self.log.lock().unwrap().close_on = Some(kind.to_string());
+        }
+
+        /// From now on the server's clock is `secs` behind the real time (`None`:
+        /// right) and it refuses the connection of any device while it is.
+        fn set_clock_behind(&self, secs: Option<i64>) {
+            self.log.lock().unwrap().clock_behind_secs = secs;
         }
 
         fn reset(&self, connection: usize) {
@@ -1182,17 +1188,31 @@ mod tests {
         let mut probe = [0u8; 2048];
         let read = stream.peek(&mut probe).await.unwrap_or(0);
         let head = String::from_utf8_lossy(&probe[..read]).to_lowercase();
-        if !head.contains("upgrade: websocket") {
-            // The question: where is the signaling?
+        let clock_behind_secs = log.lock().unwrap().clock_behind_secs;
+        let date = chrono::DateTime::from_timestamp(
+            chrono::Utc::now().timestamp() - clock_behind_secs.unwrap_or(0),
+            0,
+        )
+        .unwrap()
+        .format("%a, %d %b %Y %H:%M:%S GMT");
+        let upgrade = head.contains("upgrade: websocket");
+        if !upgrade || clock_behind_secs.is_some() {
             let mut stream = stream;
             let mut request = [0u8; 2048];
             let _ = stream.read(&mut request).await;
-            let body = format!(r#"{{"url":"{TEST_WS_SCHEME}{addr}/v1/signaling"}}"#);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
+            let response = if upgrade {
+                format!(
+                    "HTTP/1.1 401 Unauthorized\r\nDate: {date}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+            } else {
+                // The question: where is the signaling?
+                let body = format!(r#"{{"url":"{TEST_WS_SCHEME}{addr}/v1/signaling"}}"#);
+                format!(
+                    "HTTP/1.1 200 OK\r\nDate: {date}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            };
             let _ = stream.write_all(response.as_bytes()).await;
             return;
         }
@@ -1226,6 +1246,9 @@ mod tests {
                     let closing = {
                         let mut log = log.lock().unwrap();
                         log.received.push((me, kind.clone()));
+                        if kind == "CreateRoom" || kind == "JoinRoom" {
+                            log.entered.push(value["data"].clone());
+                        }
                         log.close_on.as_deref() == Some(kind.as_str())
                     };
                     if closing {
@@ -1233,18 +1256,18 @@ mod tests {
                     }
                     let reply = match kind.as_str() {
                         "ListRooms" => Some(
-                            r#"{"type":"RoomList","data":{"rooms":[{"id":"t","name":"Test Room","peer_count":0,"max_peers":10,"has_password":false,"invite_code":"TEST22","test_room":true}]}}"#
+                            r#"{"type":"RoomList","data":{"rooms":[{"id":"t","name":"Test Room","peer_count":0,"max_peers":10,"has_password":false,"invite_code":"HJK567MNP","test_room":true}]}}"#
                                 .to_string(),
                         ),
                         "CreateRoom" => Some(format!(
-                            r#"{{"type":"RoomCreated","data":{{"room_id":"room-1","peer_id":"{}","invite_code":"ABC234"}}}}"#,
+                            r#"{{"type":"RoomCreated","data":{{"room_id":"room-1","peer_id":"{}","invite_code":"ABC234XYZ"}}}}"#,
                             Uuid::from_u128(ME)
                         )),
                         "JoinRoom" if value["data"]["room_id"] == "NOPE22" => Some(
                             r#"{"type":"Error","data":{"message":"room not found"}}"#.to_string(),
                         ),
                         "JoinRoom" => Some(format!(
-                            r#"{{"type":"RoomJoined","data":{{"room_id":"room-1","peer_id":"{}","invite_code":"ABC234","peers":[{}]}}}}"#,
+                            r#"{{"type":"RoomJoined","data":{{"room_id":"room-1","peer_id":"{}","invite_code":"ABC234XYZ","peers":[{}]}}}}"#,
                             Uuid::from_u128(ME),
                             peer_json(OTHER, "Aki")
                         )),
@@ -1283,9 +1306,11 @@ mod tests {
         app
     }
 
-    /// Waits until `wanted` holds of the session, or fails after ten seconds.
+    /// Waits until `wanted` holds of the session, or fails after a minute.
+    /// The limit is only for a session that is stuck: a busy machine takes
+    /// several times as long as an idle one to get there.
     async fn until(app: &tauri::App<MockRuntime>, wanted: impl Fn(&Snapshot) -> bool) -> Snapshot {
-        for _ in 0..200 {
+        for _ in 0..1200 {
             let snapshot = app.state::<SessionState>().snapshot();
             if wanted(&snapshot) {
                 return snapshot;
@@ -1310,7 +1335,7 @@ mod tests {
 
     async fn in_a_room(server: &FakeServer, dir: &tempfile::TempDir) -> tauri::App<MockRuntime> {
         let app = connected_to_the_server(server, dir).await;
-        join(app.handle(), "ABC234".to_string()).await.unwrap();
+        join(app.handle(), "ABC234XYZ".to_string()).await.unwrap();
         app
     }
 
@@ -1330,7 +1355,7 @@ mod tests {
         let snapshot = until(&app, |s| s.phase == Phase::ServerConnected).await;
 
         assert!(snapshot.connection_id.is_some());
-        assert_eq!(snapshot.test_room_invite_code.as_deref(), Some("TEST22"));
+        assert_eq!(snapshot.test_room_invite_code.as_deref(), Some("HJK567MNP"));
         assert_eq!(snapshot.room, None);
     }
 
@@ -1357,6 +1382,85 @@ mod tests {
         assert_eq!(snapshot.connection_id, None);
     }
 
+    /// Verifies: REQ-IDT-009
+    #[tokio::test]
+    async fn the_server_refuses_the_identity_because_the_clock_is_off_ends_in_an_error_that_names_the_gap(
+    ) {
+        let server = FakeServer::start().await;
+        server.set_clock_behind(Some(375));
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_for(&server, &dir);
+
+        let result = session_connect_for_test(&app).await;
+
+        let snapshot = app.state::<SessionState>().snapshot();
+        let error = result.expect_err("the connection is refused");
+        assert!(
+            error.contains("clock is ahead of the server's by 37"),
+            "{error}"
+        );
+        assert_eq!(snapshot.phase, Phase::Error);
+        assert_eq!(snapshot.error, Some(error));
+        assert_eq!(snapshot.connection_id, None);
+    }
+
+    /// Verifies: REQ-IDT-010
+    #[tokio::test]
+    async fn the_clock_is_put_right_after_the_refusal_connects_again_without_being_asked() {
+        let server = FakeServer::start().await;
+        server.set_clock_behind(Some(375));
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_for(&server, &dir);
+        spawn(app.handle().clone());
+        until(&app, |s| s.phase == Phase::Error).await;
+
+        server.set_clock_behind(None);
+        let snapshot = until(&app, |s| s.phase == Phase::ServerConnected).await;
+
+        assert!(snapshot.connection_id.is_some());
+        assert_eq!(snapshot.error, None);
+        assert_eq!(snapshot.test_room_invite_code.as_deref(), Some("HJK567MNP"));
+    }
+
+    /// Verifies: REQ-IDT-010
+    #[tokio::test]
+    async fn the_clock_is_still_off_after_a_wait_stays_in_the_error_and_does_not_flicker_to_connecting(
+    ) {
+        let server = FakeServer::start().await;
+        server.set_clock_behind(Some(375));
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_for(&server, &dir);
+        spawn(app.handle().clone());
+        until(&app, |s| s.phase == Phase::Error).await;
+        let revision = app.state::<SessionState>().snapshot().revision;
+
+        tokio::time::sleep(CLOCK_RECHECK_INTERVAL * 4).await;
+
+        let snapshot = app.state::<SessionState>().snapshot();
+        assert_eq!(snapshot.phase, Phase::Error);
+        assert_eq!(snapshot.revision, revision);
+    }
+
+    /// Verifies: REQ-IDT-010
+    #[tokio::test]
+    async fn the_person_connects_by_hand_while_the_clock_is_off_the_wait_for_the_clock_ends() {
+        let server = FakeServer::start().await;
+        server.set_clock_behind(Some(375));
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_for(&server, &dir);
+        spawn(app.handle().clone());
+        until(&app, |s| s.phase == Phase::Error).await;
+
+        // The hand attempt is refused again and starts its own wait; the first
+        // one, whose step was ended, must not connect once the clock is right.
+        let _ = session_connect_for_test(&app).await;
+        server.set_clock_behind(None);
+        until(&app, |s| s.phase == Phase::ServerConnected).await;
+        tokio::time::sleep(CLOCK_RECHECK_INTERVAL * 4).await;
+
+        assert_eq!(server.connections(), 1);
+    }
+
     async fn session_connect_for_test(app: &tauri::App<MockRuntime>) -> Result<Snapshot, String> {
         let epoch = app.state::<SessionState>().next_epoch();
         connect(app.handle(), epoch).await
@@ -1373,7 +1477,7 @@ mod tests {
 
         assert_eq!(snapshot.phase, Phase::Connected);
         let room = snapshot.room.unwrap();
-        assert_eq!(room.invite_code, "ABC234");
+        assert_eq!(room.invite_code, "ABC234XYZ");
         assert_eq!(room.peer_id, Uuid::from_u128(ME).to_string());
         assert_eq!(
             room.peer_name,
@@ -1384,21 +1488,19 @@ mod tests {
 
     /// Verifies: REQ-RMT-028
     #[tokio::test]
-    async fn a_room_is_joined_lists_who_is_in_it_and_remembers_the_code_in_the_history() {
+    async fn a_room_is_joined_lists_who_is_in_it() {
         let server = FakeServer::start().await;
         let dir = tempfile::tempdir().unwrap();
         let app = connected_to_the_server(&server, &dir).await;
 
-        let snapshot = join(app.handle(), "abc234".to_string()).await.unwrap();
+        let snapshot = join(app.handle(), "abc234xyz".to_string()).await.unwrap();
 
         assert_eq!(snapshot.phase, Phase::Connected);
         let room = snapshot.room.unwrap();
-        assert_eq!(room.invite_code, "ABC234");
+        assert_eq!(room.invite_code, "ABC234XYZ");
         assert_eq!(room.participants.len(), 1);
         assert_eq!(room.participants[0].name, "Aki");
         assert_eq!(room.participants[0].features, vec!["peer_message"]);
-        let history = app.state::<ConfigState>().get().unwrap().connection_history;
-        assert_eq!(history[0].room_code, "ABC234");
     }
 
     /// Verifies: REQ-RMT-028
@@ -1415,6 +1517,33 @@ mod tests {
         }
     }
 
+    /// Verifies: REQ-CON-032
+    #[tokio::test]
+    async fn creating_and_joining_a_room_tell_the_server_what_the_app_is_without_the_display_name()
+    {
+        let server = FakeServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let app = connected_to_the_server(&server, &dir).await;
+        crate::config::config_set_peer_name("Taro's secret display name".to_string(), app.state())
+            .unwrap();
+        create(app.handle()).await.unwrap();
+        leave(app.handle()).await.unwrap();
+        join(app.handle(), "ABC234XYZ".to_string()).await.unwrap();
+
+        let entering = server.entering_messages();
+        assert_eq!(entering.len(), 2);
+        for data in &entering {
+            let info = &data["client_info"];
+            assert_eq!(info["app_version"], "test");
+            assert_eq!(info["os"], std::env::consts::OS);
+            assert_eq!(info["arch"], std::env::consts::ARCH);
+            assert!(info["settings"].is_object(), "{}", info);
+            let text = info.to_string();
+            assert!(!text.contains("Taro's secret display name"), "{}", text);
+            assert!(!text.contains("peer_name"), "{}", text);
+        }
+    }
+
     /// Verifies: REQ-RMT-028
     #[tokio::test]
     async fn the_app_is_already_in_a_room_refuses_to_enter_another_and_stays_where_it_is() {
@@ -1422,7 +1551,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let app = in_a_room(&server, &dir).await;
 
-        let joined = join(app.handle(), "ZZZ999".to_string()).await;
+        let joined = join(app.handle(), "ZZZ999ZZZ".to_string()).await;
         let created = create(app.handle()).await;
 
         assert!(joined.is_err() && created.is_err());
@@ -1497,7 +1626,7 @@ mod tests {
         assert_eq!(snapshot.phase, Phase::ServerConnected);
         assert_eq!(snapshot.room, None);
         assert_eq!(snapshot.connection_id, connection);
-        assert_eq!(snapshot.test_room_invite_code.as_deref(), Some("TEST22"));
+        assert_eq!(snapshot.test_room_invite_code.as_deref(), Some("HJK567MNP"));
         assert_eq!(server.count("LeaveRoom"), 1);
     }
 
@@ -1517,76 +1646,6 @@ mod tests {
 
     /// Verifies: REQ-RMT-028
     #[tokio::test]
-    async fn the_server_closes_the_room_starts_over_with_a_new_connection_on_the_room_list() {
-        let server = FakeServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let app = in_a_room(&server, &dir).await;
-        let first = app.state::<SessionState>().snapshot().connection_id;
-
-        server.say(
-            0,
-            r#"{"type":"RoomClosed","data":{"reason":"closed"}}"#.to_string(),
-        );
-        server.reset(0);
-        let snapshot = until(&app, |s| {
-            s.phase == Phase::ServerConnected && s.connection_id != first
-        })
-        .await;
-
-        assert_eq!(snapshot.room, None);
-        assert_eq!(server.connections(), 2);
-    }
-
-    /// Verifies: REQ-RMT-028
-    #[tokio::test]
-    async fn another_participant_is_removed_by_the_server_leaves_the_app_in_the_room() {
-        let server = FakeServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let app = in_a_room(&server, &dir).await;
-
-        server.say(
-            0,
-            format!(
-                r#"{{"type":"Kicked","data":{{"peer_id":"{}","reason":"removed"}}}}"#,
-                Uuid::from_u128(OTHER)
-            ),
-        );
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-
-        assert_eq!(
-            app.state::<SessionState>().snapshot().phase,
-            Phase::Connected
-        );
-        assert_eq!(server.connections(), 1);
-    }
-
-    /// Verifies: REQ-RMT-028
-    #[tokio::test]
-    async fn the_app_itself_is_removed_by_the_server_starts_over_on_the_room_list() {
-        let server = FakeServer::start().await;
-        let dir = tempfile::tempdir().unwrap();
-        let app = in_a_room(&server, &dir).await;
-        let first = app.state::<SessionState>().snapshot().connection_id;
-
-        server.say(
-            0,
-            format!(
-                r#"{{"type":"Kicked","data":{{"peer_id":"{}","reason":"removed"}}}}"#,
-                Uuid::from_u128(ME)
-            ),
-        );
-        server.reset(0);
-        let snapshot = until(&app, |s| {
-            s.phase == Phase::ServerConnected && s.connection_id != first
-        })
-        .await;
-
-        assert_eq!(snapshot.room, None);
-        assert_eq!(server.connections(), 2);
-    }
-
-    /// Verifies: REQ-RMT-028
-    #[tokio::test]
     async fn the_connection_drops_in_a_room_keeps_the_room_up_while_it_rejoins_the_same_room() {
         let server = FakeServer::start().await;
         let dir = tempfile::tempdir().unwrap();
@@ -1602,7 +1661,7 @@ mod tests {
         })
         .await;
 
-        assert_eq!(snapshot.room.unwrap().invite_code, "ABC234");
+        assert_eq!(snapshot.room.unwrap().invite_code, "ABC234XYZ");
         assert_eq!(server.count("JoinRoom"), 2);
     }
 

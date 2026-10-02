@@ -14,6 +14,8 @@ import {
   DeviceSource,
   DiagnosticGrade,
   DiagnosticProblem,
+  Hang,
+  HangStage,
   ProblemCode,
   RecommendedPreset,
 } from "../../../lib/tauri";
@@ -53,6 +55,14 @@ export interface DiagnosticsTabProps {
   logFolder?: string | null;
   /** Why the folder could not be opened */
   logFolderError?: string | null;
+  /** A hang found at startup while usage reporting is off; `null`/undefined = nothing to ask about */
+  previousHang?: Hang | null;
+  /** Answers the pending hang report (renders the section while set, together with `previousHang`) */
+  onSendPreviousHang?: (send: boolean) => void;
+  /** Set once the pending hang report has been answered, to show a short confirmation instead */
+  previousHangAnswered?: boolean;
+  /** Whether "send" also attaches the current jamjam.log (ADR-059: true before the app's 1.0.0 release) */
+  previousHangAttachesLog?: boolean;
   /** Whether usage reporting is on (off by default) */
   usageReporting?: boolean;
   /** Turn usage reporting on or off (renders the usage reporting section) */
@@ -63,7 +73,24 @@ export interface DiagnosticsTabProps {
   onShowUsagePreview?: () => void;
   /** Why what would be sent could not be read */
   usagePreviewError?: string | null;
+  /** "Report a problem" (ADR-058): a manual, one-off send of jamjam.log and a comment */
+  reportProblemState?: ReportProblemState;
+  /** The jamjam.log content that would be sent; null while not loaded yet */
+  reportProblemPreview?: string | null;
+  reportProblemComment?: string;
+  reportProblemError?: string | null;
+  /** Starts the flow (loads the preview). Renders the section while set. */
+  onOpenReportProblem?: () => void;
+  onReportProblemCommentChange?: (value: string) => void;
+  onSendReportProblem?: () => void;
+  /** Back to idle without sending */
+  onCancelReportProblem?: () => void;
 }
+
+export type ReportProblemState = "idle" | "loading" | "ready" | "sending" | "sent" | "error";
+
+/** The comment field's cap, in Unicode scalar values (matches `MAX_COMMENT_CHARS` in `report_problem.rs`). */
+export const REPORT_PROBLEM_COMMENT_MAX = 2000;
 
 type StepStatus = "done" | "active" | "pending";
 type Tone = "default" | "good" | "warn" | "bad";
@@ -293,6 +320,84 @@ function LogFileSection({
   );
 }
 
+function stageLabel(stage: HangStage, t: TFunction): string {
+  switch (stage) {
+    case "app_exit":
+      return t("settings.diagnostics.previousHang.stageAppExit", "closing");
+    case "restart":
+      return t("settings.diagnostics.previousHang.stageRestart", "restarting");
+    case "update_apply":
+      return t("settings.diagnostics.previousHang.stageUpdateApply", "installing an update");
+    case "device_open":
+      return t("settings.diagnostics.previousHang.stageDeviceOpen", "opening an audio device");
+    case "unknown":
+      return t("settings.diagnostics.previousHang.stageUnknown", "running");
+  }
+}
+
+function PreviousHangSection({
+  previousHang,
+  onSendPreviousHang,
+  previousHangAnswered,
+  previousHangAttachesLog,
+}: Pick<
+  DiagnosticsTabProps,
+  "previousHang" | "onSendPreviousHang" | "previousHangAnswered" | "previousHangAttachesLog"
+>) {
+  const { t } = useTranslation();
+
+  if (!onSendPreviousHang || !previousHang) return null;
+
+  if (previousHangAnswered) {
+    return (
+      <div className="diagnostics-tab__usage" data-testid="diagnostics-previous-hang">
+        <p className="diagnostics-tab__description">
+          {t("settings.diagnostics.previousHang.thanks", "Okay.")}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="diagnostics-tab__usage" data-testid="diagnostics-previous-hang">
+      <span className="diagnostics-tab__problems-title">
+        {t("settings.diagnostics.previousHang.title", "Last time")}
+      </span>
+      <p className="diagnostics-tab__description">
+        {previousHangAttachesLog
+          ? t(
+              "settings.diagnostics.previousHang.descriptionWithLog",
+              "jamjam did not close normally last time - it seems to have been stuck while {{stage}}. Send a small report, together with the current jamjam.log, so this can be found and fixed? The log can include the server address, your audio device names, the room ID, and other participants' identifiers.",
+              { stage: stageLabel(previousHang.stage, t) }
+            )
+          : t(
+              "settings.diagnostics.previousHang.description",
+              "jamjam did not close normally last time - it seems to have been stuck while {{stage}}. Send a small report (nothing about your audio, chat or rooms) so this can be found and fixed?",
+              { stage: stageLabel(previousHang.stage, t) }
+            )}
+      </p>
+      <div className="diagnostics-tab__usage-actions">
+        <button
+          className="diagnostics-tab__rerun-btn"
+          onClick={() => onSendPreviousHang(true)}
+          type="button"
+          data-testid="diagnostics-previous-hang-send"
+        >
+          {t("settings.diagnostics.previousHang.send", "Send report")}
+        </button>
+        <button
+          className="diagnostics-tab__rerun-btn"
+          onClick={() => onSendPreviousHang(false)}
+          type="button"
+          data-testid="diagnostics-previous-hang-dismiss"
+        >
+          {t("settings.diagnostics.previousHang.dismiss", "Don't send")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function UsageReportingSection({
   usageReporting = false,
   onUsageReportingChange,
@@ -394,6 +499,147 @@ function UsageReportingSection({
   );
 }
 
+function ReportProblemSection({
+  reportProblemState = "idle",
+  reportProblemPreview,
+  reportProblemComment = "",
+  reportProblemError,
+  onOpenReportProblem,
+  onReportProblemCommentChange,
+  onSendReportProblem,
+  onCancelReportProblem,
+}: Pick<
+  DiagnosticsTabProps,
+  | "reportProblemState"
+  | "reportProblemPreview"
+  | "reportProblemComment"
+  | "reportProblemError"
+  | "onOpenReportProblem"
+  | "onReportProblemCommentChange"
+  | "onSendReportProblem"
+  | "onCancelReportProblem"
+>) {
+  const { t } = useTranslation();
+
+  if (!onOpenReportProblem) return null;
+
+  const title = (
+    <span className="diagnostics-tab__problems-title">
+      {t("settings.diagnostics.reportProblem.title", "Report a problem")}
+    </span>
+  );
+
+  if (reportProblemState === "idle") {
+    return (
+      <div className="diagnostics-tab__usage" data-testid="diagnostics-report-problem">
+        {title}
+        <p className="diagnostics-tab__description">
+          {t(
+            "settings.diagnostics.reportProblem.description",
+            "Send the current jamjam.log and a short comment about what is going wrong right now."
+          )}
+        </p>
+        <div>
+          <button
+            className="diagnostics-tab__rerun-btn"
+            onClick={onOpenReportProblem}
+            type="button"
+            data-testid="diagnostics-report-problem-start"
+          >
+            {t("settings.diagnostics.reportProblem.start", "Report a problem")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (reportProblemState === "loading") {
+    return (
+      <div className="diagnostics-tab__usage" data-testid="diagnostics-report-problem">
+        {title}
+        <p className="diagnostics-tab__description">
+          {t("settings.diagnostics.reportProblem.loading", "Loading...")}
+        </p>
+      </div>
+    );
+  }
+
+  if (reportProblemState === "sent") {
+    return (
+      <div className="diagnostics-tab__usage" data-testid="diagnostics-report-problem">
+        {title}
+        <p className="diagnostics-tab__description">
+          {t("settings.diagnostics.reportProblem.sent", "Sent. Thank you.")}
+        </p>
+        <div>
+          <button
+            className="diagnostics-tab__rerun-btn"
+            onClick={onCancelReportProblem}
+            type="button"
+            data-testid="diagnostics-report-problem-close"
+          >
+            {t("settings.diagnostics.reportProblem.sentClose", "Close")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // "ready", "sending" and "error" all show the preview and comment field.
+  const sending = reportProblemState === "sending";
+  return (
+    <div className="diagnostics-tab__usage" data-testid="diagnostics-report-problem">
+      {title}
+      {reportProblemPreview != null && (
+        <pre className="diagnostics-tab__usage-lines" data-testid="diagnostics-report-problem-preview">
+          {reportProblemPreview}
+        </pre>
+      )}
+      <textarea
+        className="diagnostics-tab__comment"
+        value={reportProblemComment}
+        onChange={(e) => onReportProblemCommentChange?.(e.target.value)}
+        maxLength={REPORT_PROBLEM_COMMENT_MAX}
+        placeholder={t(
+          "settings.diagnostics.reportProblem.commentPlaceholder",
+          "What happened? (optional)"
+        )}
+        disabled={sending}
+        data-testid="diagnostics-report-problem-comment"
+      />
+      <div className="diagnostics-tab__usage-actions">
+        <button
+          className="diagnostics-tab__rerun-btn"
+          onClick={onSendReportProblem}
+          type="button"
+          disabled={sending}
+          data-testid="diagnostics-report-problem-send"
+        >
+          {sending
+            ? t("settings.diagnostics.reportProblem.sending", "Sending...")
+            : reportProblemState === "error"
+              ? t("settings.diagnostics.reportProblem.retry", "Try again")
+              : t("settings.diagnostics.reportProblem.send", "Send")}
+        </button>
+        <button
+          className="diagnostics-tab__rerun-btn"
+          onClick={onCancelReportProblem}
+          type="button"
+          disabled={sending}
+          data-testid="diagnostics-report-problem-cancel"
+        >
+          {t("settings.diagnostics.reportProblem.cancel", "Cancel")}
+        </button>
+      </div>
+      {reportProblemError && (
+        <p className="diagnostics-tab__log-error" role="alert">
+          {reportProblemError}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function DiagnosticsTab({
   state = "idle",
   progress = 0,
@@ -405,15 +651,33 @@ export function DiagnosticsTab({
   onOpenLogFolder,
   logFolder,
   logFolderError,
+  previousHang,
+  onSendPreviousHang,
+  previousHangAnswered,
+  previousHangAttachesLog,
   usageReporting,
   onUsageReportingChange,
   usagePreview,
   onShowUsagePreview,
   usagePreviewError,
+  reportProblemState,
+  reportProblemPreview,
+  reportProblemComment,
+  reportProblemError,
+  onOpenReportProblem,
+  onReportProblemCommentChange,
+  onSendReportProblem,
+  onCancelReportProblem,
 }: DiagnosticsTabProps) {
   const { t } = useTranslation();
   const logFile = (
     <>
+      <PreviousHangSection
+        previousHang={previousHang}
+        onSendPreviousHang={onSendPreviousHang}
+        previousHangAnswered={previousHangAnswered}
+        previousHangAttachesLog={previousHangAttachesLog}
+      />
       <UsageReportingSection
         usageReporting={usageReporting}
         onUsageReportingChange={onUsageReportingChange}
@@ -425,6 +689,16 @@ export function DiagnosticsTab({
         onOpenLogFolder={onOpenLogFolder}
         logFolder={logFolder}
         logFolderError={logFolderError}
+      />
+      <ReportProblemSection
+        reportProblemState={reportProblemState}
+        reportProblemPreview={reportProblemPreview}
+        reportProblemComment={reportProblemComment}
+        reportProblemError={reportProblemError}
+        onOpenReportProblem={onOpenReportProblem}
+        onReportProblemCommentChange={onReportProblemCommentChange}
+        onSendReportProblem={onSendReportProblem}
+        onCancelReportProblem={onCancelReportProblem}
       />
     </>
   );

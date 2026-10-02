@@ -3,6 +3,7 @@
 //! Handles UDP transport, NAT traversal, signaling, FEC, encryption, and connection management.
 
 mod bandwidth;
+mod clock;
 mod connection;
 mod device_identity;
 mod discovery;
@@ -22,6 +23,7 @@ mod transport;
 pub use bandwidth::{
     required_bps, status_label, BandwidthEstimator, BandwidthStatus, BandwidthVerdict,
 };
+pub use clock::{clock_offset_secs, CLOCK_SKEW_NOTICE_SECS};
 pub use connection::{
     AudioEncodingConfig, Connection, ConnectionState, ConnectionStats, PeerLatencyInfo,
     ReconnectConfig,
@@ -30,10 +32,10 @@ pub use device_identity::{
     device_id_from_public_key, signed_payload, DeviceIdentity, DEVICE_ID_LEN,
 };
 pub use discovery::{
-    check_signaling_url, discover_signaling_url, signaling_endpoint_url, SignalingEndpoint,
-    SIGNALING_ENDPOINT_PATH,
+    check_signaling_url, discover_signaling_url, server_clock_offset_secs, signaling_endpoint_url,
+    SignalingEndpoint, SIGNALING_ENDPOINT_PATH,
 };
-pub use encryption::{EncryptedTransport, EncryptionContext, KeyExchangeMessage, KeyPair};
+pub use encryption::{LinkSecurity, Opened, SecureLink, SEAL_OVERHEAD};
 pub use error::{NetworkError, SignalingFailure};
 pub use fec::{FecDecoder, FecEncoder, FecPacket, RecoveredPacket, FEC_GROUP_SIZE};
 pub use latency::{
@@ -49,8 +51,8 @@ pub use sequence_tracker::SequenceTracker;
 pub use session::{Session, SessionConfig};
 pub use signaling::{
     candidates_to_addrs, ensure_crypto_provider_installed, gather_candidates,
-    gather_candidates_using, gather_host_candidates, generate_invite_code, invite_url,
-    is_invite_code_format, parse_invite_url, AddressCandidate, CandidateType, PeerInfo, RoomInfo,
+    gather_candidates_using, gather_host_candidates, invite_url, parse_invite_url,
+    AddressCandidate, CandidateType, ClientInfo, InvalidInviteCode, InviteCode, PeerInfo, RoomInfo,
     SignalingClient, SignalingConnection, SignalingMessage, DEVICE_ID_HEADER, DEVICE_PUBKEY_HEADER,
     DEVICE_SIGNATURE_HEADER, DEVICE_TIMESTAMP_HEADER, INVITE_URL_SCHEME, MAX_PEERS_PER_ROOM,
     PEER_MESSAGE_FEATURE,

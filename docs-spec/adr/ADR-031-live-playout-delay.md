@@ -1,8 +1,3 @@
----
-sidebar_label: "ADR-031: Live Play-out Delay"
-sidebar_position: 31
----
-
 <!-- このドキュメントは実装の正です。変更時は実装も同期すること -->
 
 # ADR-031: 再生中の段数変更と自動調整を、実際に保持する量へ効かせる
@@ -105,6 +100,7 @@ ADR-028 の「セッション中の段数変更が、バッファ破棄による
 
 ## 関連
 
+- [ADR-048: 溜め込んだ余分を捨てる](./ADR-048-playout-gives-back-piled-up-frames.md) - 目標を下げなくても、目標より深く溜まり続けたら捨てる
 - [ADR-008: ゼロレイテンシモード](./ADR-008-zero-latency-mode.md) - パススルーを固定にする根拠
 - [ADR-020: ジッタバッファの配線](./ADR-020-jitter-buffer-wiring.md) - 「適応の有効化は別途判断する」と残した箇所
 - [ADR-028: 受信音声を単段バッファにする](./ADR-028-single-stage-playout.md) - 保持量が聞こえる遅延であることの前提

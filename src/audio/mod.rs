@@ -2,11 +2,16 @@
 //!
 //! Handles audio capture, playback, and local monitoring.
 
+#[cfg(target_os = "windows")]
+mod asio;
 mod channels;
 pub(crate) mod codec;
 mod device;
+pub mod device_loop;
+mod driver;
 mod engine;
 mod error;
+pub mod fault;
 mod flight;
 mod monitor;
 mod playout;
@@ -15,7 +20,10 @@ mod preset;
 mod probe;
 mod resampler;
 mod stream;
+mod virtual_output;
 
+#[cfg(target_os = "windows")]
+pub use asio::{driver_name_of, is_asio_id, AsioDuplex};
 pub use channels::{capture_attempts, OutputRoute};
 pub use codec::{
     create_codec, AudioCodec, CodecConfig, CodecError, CodecType, OpusCodec, PcmCodec,
@@ -25,6 +33,7 @@ pub use device::{
     list_input_devices, list_output_devices, resolve_input_device, resolve_output_device,
     AudioDevice, DeviceId,
 };
+pub use driver::{bounded, LIST_TIMEOUT, OPEN_TIMEOUT};
 pub use engine::{
     AudioBuffer, AudioConfig, AudioEngine, AudioEvent, BitDepth, CaptureConfig, PlaybackConfig,
 };
@@ -41,9 +50,14 @@ pub use plc::PcmPlc;
 pub use preset::{AudioPreset, BUDGET_SAMPLE_RATE};
 pub use probe::{BurstProbe, BurstSignal, DelayStats, RoundTripReport};
 pub use resampler::{
-    create_resampler, create_resampler_with_channels, AudioResampler, FastResampler,
-    PassthroughResampler, ResamplerError,
+    create_resampler, create_resampler_with_channels, AudioResampler, CaptureResampler,
+    FastResampler, PassthroughResampler, ResamplerError,
 };
 pub use stream::{
-    capture_to_wire, mono_to_wire, PeerRateChange, ReceivePath, ADAPT_INTERVAL, WIRE_CHANNELS,
+    balance_gains, capture_to_wire, mono_to_wire, pan_received, GainRamp, PeerRateChange,
+    ReceivePath, ADAPT_INTERVAL, WIRE_CHANNELS,
+};
+pub use virtual_output::{
+    RecordingFeed, RecordingTap, VirtualOutputSink, CHANNELS as VIRTUAL_OUTPUT_CHANNELS,
+    NODE_NAME_OUT,
 };

@@ -175,3 +175,209 @@ describe('DiagnosticsTab usage reporting section', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('usage_preview failed');
   });
 });
+
+describe('DiagnosticsTab report a problem section (ADR-058)', () => {
+  // Verifies: REQ-RPT-001
+  it('nothing is rendered when there is no handler to start it', () => {
+    render(<DiagnosticsTab state="idle" />);
+
+    expect(screen.queryByTestId('diagnostics-report-problem')).not.toBeInTheDocument();
+  });
+
+  // Verifies: REQ-RPT-001
+  it('idle state shows a button that starts the flow', () => {
+    const onOpenReportProblem = vi.fn();
+    render(<DiagnosticsTab state="idle" onOpenReportProblem={onOpenReportProblem} />);
+
+    fireEvent.click(screen.getByTestId('diagnostics-report-problem-start'));
+
+    expect(onOpenReportProblem).toHaveBeenCalledTimes(1);
+  });
+
+  // Verifies: REQ-RPT-002
+  it('ready state shows exactly the preview text that would be sent', () => {
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onOpenReportProblem={() => {}}
+        reportProblemState="ready"
+        reportProblemPreview={"line one\nline two"}
+      />
+    );
+
+    expect(screen.getByTestId('diagnostics-report-problem-preview')).toHaveTextContent(
+      'line one line two'
+    );
+  });
+
+  // Verifies: REQ-RPT-001
+  it('the comment field is capped at 2000 characters', () => {
+    render(
+      <DiagnosticsTab state="idle" onOpenReportProblem={() => {}} reportProblemState="ready" />
+    );
+
+    expect(screen.getByTestId('diagnostics-report-problem-comment')).toHaveAttribute(
+      'maxlength',
+      '2000'
+    );
+  });
+
+  // Verifies: REQ-RPT-001
+  it('pressing send calls the handler with no separate consent step', () => {
+    const onSendReportProblem = vi.fn();
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onOpenReportProblem={() => {}}
+        reportProblemState="ready"
+        onSendReportProblem={onSendReportProblem}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('diagnostics-report-problem-send'));
+
+    expect(onSendReportProblem).toHaveBeenCalledTimes(1);
+  });
+
+  it('sending state disables the send and cancel buttons', () => {
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onOpenReportProblem={() => {}}
+        reportProblemState="sending"
+        onSendReportProblem={() => {}}
+        onCancelReportProblem={() => {}}
+      />
+    );
+
+    expect(screen.getByTestId('diagnostics-report-problem-send')).toBeDisabled();
+    expect(screen.getByTestId('diagnostics-report-problem-cancel')).toBeDisabled();
+  });
+
+  it('sent state shows a confirmation instead of the form', () => {
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onOpenReportProblem={() => {}}
+        reportProblemState="sent"
+        onCancelReportProblem={() => {}}
+      />
+    );
+
+    expect(screen.queryByTestId('diagnostics-report-problem-comment')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('diagnostics-report-problem-close'));
+  });
+
+  it('error state shows the reason as an alert and offers a retry', () => {
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onOpenReportProblem={() => {}}
+        reportProblemState="error"
+        reportProblemError="送信できませんでした"
+        onSendReportProblem={() => {}}
+      />
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('送信できませんでした');
+    expect(screen.getByTestId('diagnostics-report-problem-send')).toHaveTextContent('Try again');
+  });
+});
+
+describe('DiagnosticsTab previous hang section (ADR-056, ADR-059)', () => {
+  const hang = { stage: 'restart' as const, stalled_ms: 9000 };
+
+  // Verifies: REQ-TEL-020
+  it('nothing is rendered when there is no pending hang', () => {
+    render(<DiagnosticsTab state="idle" onSendPreviousHang={() => {}} previousHang={null} />);
+
+    expect(screen.queryByTestId('diagnostics-previous-hang')).not.toBeInTheDocument();
+  });
+
+  // Verifies: REQ-TEL-020
+  it('nothing is rendered when there is no handler to answer it', () => {
+    render(<DiagnosticsTab state="idle" previousHang={hang} />);
+
+    expect(screen.queryByTestId('diagnostics-previous-hang')).not.toBeInTheDocument();
+  });
+
+  // Verifies: REQ-TEL-020
+  it('a pending hang with no attached log describes the report as not carrying audio, chat or room content', () => {
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onSendPreviousHang={() => {}}
+        previousHang={hang}
+        previousHangAttachesLog={false}
+      />
+    );
+
+    expect(screen.getByTestId('diagnostics-previous-hang')).toHaveTextContent(
+      'nothing about your audio, chat or rooms'
+    );
+  });
+
+  // Verifies: REQ-TEL-021
+  it('a pending hang that attaches the log says so and names what the log can carry', () => {
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onSendPreviousHang={() => {}}
+        previousHang={hang}
+        previousHangAttachesLog={true}
+      />
+    );
+
+    const section = screen.getByTestId('diagnostics-previous-hang');
+    expect(section).toHaveTextContent('jamjam.log');
+    expect(section).toHaveTextContent('room ID');
+    expect(section).not.toHaveTextContent('nothing about your audio, chat or rooms');
+  });
+
+  // Verifies: REQ-TEL-020
+  it('pressing send answers with true', () => {
+    const onSendPreviousHang = vi.fn();
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onSendPreviousHang={onSendPreviousHang}
+        previousHang={hang}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('diagnostics-previous-hang-send'));
+
+    expect(onSendPreviousHang).toHaveBeenCalledWith(true);
+  });
+
+  // Verifies: REQ-TEL-020
+  it('pressing dismiss answers with false', () => {
+    const onSendPreviousHang = vi.fn();
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onSendPreviousHang={onSendPreviousHang}
+        previousHang={hang}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('diagnostics-previous-hang-dismiss'));
+
+    expect(onSendPreviousHang).toHaveBeenCalledWith(false);
+  });
+
+  // Verifies: REQ-TEL-020
+  it('once answered, a short confirmation replaces the report and its buttons', () => {
+    render(
+      <DiagnosticsTab
+        state="idle"
+        onSendPreviousHang={() => {}}
+        previousHang={hang}
+        previousHangAnswered={true}
+      />
+    );
+
+    expect(screen.queryByTestId('diagnostics-previous-hang-send')).not.toBeInTheDocument();
+    expect(screen.getByTestId('diagnostics-previous-hang')).toHaveTextContent('Okay.');
+  });
+});

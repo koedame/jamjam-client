@@ -367,6 +367,14 @@ export type ConnectionQualityBand = 'good' | 'fair' | 'poor';
 export type BandwidthStatus = 'sufficient' | 'marginal' | 'insufficient' | 'no_signal';
 
 /**
+ * Whether the audio to the peer is encrypted (REQ-SEC-001, REQ-SEC-004, REQ-SEC-006)
+ *
+ * negotiating: the keys are being agreed, which takes a moment after connecting
+ * unencrypted: the peer's app is older than the encryption and cannot do it
+ */
+export type AudioEncryption = 'encrypted' | 'negotiating' | 'unencrypted';
+
+/**
  * Network statistics
  */
 export interface NetworkStats {
@@ -401,6 +409,8 @@ export interface NetworkStats {
   packets_sent: number;
   /** Total packets received */
   packets_received: number;
+  /** Whether the audio to the peer is encrypted */
+  encryption: AudioEncryption;
   /** Total bytes sent */
   bytes_sent: number;
   /** Total bytes received */
@@ -492,6 +502,26 @@ export interface StreamingStatus {
   connection_state: string | null;
   /** Why the connection failed, when connection_state is "failed" */
   connection_error: string | null;
+  /**
+   * Devices the audio thread could not open, one per side at most (ADR-050).
+   * Read whether or not a session is active: one that could not open its
+   * device never became active.
+   */
+  device_problems: DeviceProblem[];
+}
+
+/** A device the audio thread could not open */
+export interface DeviceProblem {
+  side: "input" | "output";
+  /**
+   * "unresponsive": the driver did not answer in time. "failed": it refused.
+   * "unsupported_format": it does not open at the session's sample rate.
+   */
+  trouble: "unresponsive" | "failed" | "unsupported_format";
+  /** The device's name, when the system's list has one for it */
+  device: string | null;
+  /** The sample rate the session asked the device to open at */
+  sample_rate: number;
 }
 
 /**
@@ -602,18 +632,6 @@ export async function mixerSetPeerMuted(peerId: string, muted: boolean): Promise
 // ============================================================================
 
 /**
- * Connection history entry
- */
-export interface ConnectionHistoryEntry {
-  /** Room code used for the connection */
-  room_code: string;
-  /** Timestamp of the connection (ISO 8601 format) */
-  connected_at: string;
-  /** Optional user-defined label for this connection */
-  label: string | null;
-}
-
-/**
  * Application configuration
  */
 export interface AppConfig {
@@ -627,8 +645,6 @@ export interface AppConfig {
   server_url: string | null;
   /** Selected audio preset */
   preset: AudioPresetId;
-  /** Connection history (most recent first) */
-  connection_history: ConnectionHistoryEntry[];
   /** Audio sample rate in Hz. Valid values: 44100, 48000, 96000 (ADR-013) */
   sample_rate: number;
   /** UI language (null = not chosen yet; use configGetLanguage/configSetLanguage) */
@@ -718,64 +734,6 @@ export async function configListPresets(): Promise<PresetInfo[]> {
  */
 export async function configGetPreset(): Promise<AudioPresetId> {
   return invoke("config_get_preset");
-}
-
-// ============================================================================
-// Connection History API
-// ============================================================================
-
-/**
- * Get connection history
- * @returns List of past connections, most recent first
- */
-export async function configGetConnectionHistory(): Promise<
-  ConnectionHistoryEntry[]
-> {
-  return invoke("config_get_connection_history");
-}
-
-/**
- * Add a connection to history
- * @param roomCode Room code that was used
- * @param label Optional label for this connection
- */
-export async function configAddConnectionHistory(
-  roomCode: string,
-  label?: string
-): Promise<void> {
-  return invoke("config_add_connection_history", {
-    roomCode,
-    label: label ?? null,
-  });
-}
-
-/**
- * Remove a connection from history
- * @param roomCode Room code to remove
- */
-export async function configRemoveConnectionHistory(
-  roomCode: string
-): Promise<void> {
-  return invoke("config_remove_connection_history", { roomCode });
-}
-
-/**
- * Clear all connection history
- */
-export async function configClearConnectionHistory(): Promise<void> {
-  return invoke("config_clear_connection_history");
-}
-
-/**
- * Update connection history entry label
- * @param roomCode Room code to update
- * @param label New label (or null to remove label)
- */
-export async function configUpdateConnectionHistoryLabel(
-  roomCode: string,
-  label: string | null
-): Promise<void> {
-  return invoke("config_update_connection_history_label", { roomCode, label });
 }
 
 /**
@@ -874,6 +832,8 @@ export type ProblemCode =
   | { type: "SignalingUnreachable"; data: { url: string; error: string | null } }
   | { type: "InputEnumerationFailed"; data: { error: string } }
   | { type: "OutputEnumerationFailed"; data: { error: string } }
+  | { type: "InputDeviceUnresponsive" }
+  | { type: "OutputDeviceUnresponsive" }
   | { type: "NoInputDevices" }
   | { type: "NoOutputDevices" }
   | { type: "InputNot48kHz"; data: { device_name: string } }
@@ -1294,4 +1254,65 @@ export async function logOpenDir(): Promise<string> {
  */
 export async function usagePreview(): Promise<string> {
   return invoke("usage_preview");
+}
+
+/** The critical operation a watchdog was watching when the launch before this one did not end cleanly. */
+export type HangStage = "app_exit" | "restart" | "update_apply" | "device_open" | "unknown";
+
+/** The launch before this one did not end cleanly: found at startup, kept only while usage reporting is off. */
+export interface Hang {
+  stage: HangStage;
+  /** How long the stage had run when it was noticed; absent when `stage` is `unknown`. */
+  stalled_ms?: number;
+}
+
+/**
+ * A hang found at startup while usage reporting is off, if there is one
+ * still waiting for the user to say whether to send it.
+ *
+ * @returns `null` once answered, or if usage reporting is already on (it was sent with the rest, unasked)
+ */
+export async function usagePreviousHang(): Promise<Hang | null> {
+  return invoke("usage_previous_hang");
+}
+
+/**
+ * Whether answering "send" to `usagePreviousHang` also attaches the current
+ * `jamjam.log` (ADR-059): true before the app's 1.0.0 release, so the
+ * confirmation can say so accurately.
+ */
+export async function usagePreviousHangAttachesLog(): Promise<boolean> {
+  return invoke("usage_previous_hang_attaches_log");
+}
+
+/**
+ * Answers the one pending hang report found at startup. When
+ * `usagePreviousHangAttachesLog` is true, `send: true` also submits the
+ * current `jamjam.log` through the same intake "Report a problem" uses.
+ *
+ * @param send `true` sends it on its own without turning usage reporting on; `false` discards it
+ */
+export async function usageSendPreviousHang(send: boolean): Promise<void> {
+  return invoke("usage_send_previous_hang", { send });
+}
+
+// =============================================================================
+// Report a problem (ADR-057, REQ-RPT)
+// =============================================================================
+
+/**
+ * The `jamjam.log` content `reportProblemSend` would submit right now
+ * (masked, tail-capped), exactly as it will be sent.
+ */
+export async function reportProblemPreview(): Promise<string> {
+  return invoke("report_problem_preview");
+}
+
+/**
+ * Sends the current `jamjam.log` (masked, capped) and `comment` (capped at
+ * 2000 Unicode scalar values) to the problem report intake. Pressing this
+ * is the only consent asked; it does not read or change `usage_reporting`.
+ */
+export async function reportProblemSend(comment: string): Promise<void> {
+  return invoke("report_problem_send", { comment });
 }

@@ -24,10 +24,17 @@ import {
   type SettingChange,
   logOpenDir,
   usagePreview as readUsagePreview,
+  usagePreviousHang,
+  usagePreviousHangAttachesLog,
+  usageSendPreviousHang,
+  reportProblemPreview as readReportProblemPreview,
+  reportProblemSend,
+  type Hang,
 } from "../../lib/tauri";
 import { useWindowEvent } from "../../hooks/useWindowEvents";
 import { useAudioSettingsTab } from "./useAudioSettingsTab";
 import { SettingsPanel, type SettingsTabId, type Language } from "./index";
+import type { ReportProblemState } from "./tabs/DiagnosticsTab";
 
 export interface SettingsPanelAdapterProps {
   /** Initial tab to show */
@@ -96,6 +103,22 @@ export function SettingsPanelAdapter({
   const [usagePreview, setUsagePreview] = useState<string | null>(null);
   const [usagePreviewError, setUsagePreviewError] = useState<string | null>(null);
 
+  // A hang found at startup while usage reporting is off (undefined = not
+  // checked yet, null = nothing pending). Answering it clears the pending
+  // report on the backend; `previousHangAnswered` keeps it visible as a
+  // short confirmation instead of the section just disappearing.
+  const [previousHang, setPreviousHang] = useState<Hang | null | undefined>(undefined);
+  const [previousHangAnswered, setPreviousHangAnswered] = useState(false);
+  // Whether sending it also attaches jamjam.log (ADR-059: true before 1.0.0).
+  const [previousHangAttachesLog, setPreviousHangAttachesLog] = useState(false);
+
+  // Report a problem (ADR-058): a manual, one-off send, independent of
+  // usage reporting. `idle` until the user starts it.
+  const [reportProblemState, setReportProblemState] = useState<ReportProblemState>("idle");
+  const [reportProblemPreview, setReportProblemPreview] = useState<string | null>(null);
+  const [reportProblemComment, setReportProblemComment] = useState("");
+  const [reportProblemError, setReportProblemError] = useState<string | null>(null);
+
   // If the panel unmounts mid-run (e.g. the settings window closes while
   // diagnostics are running), stop the progress-simulation interval and
   // mark the run as cancelled so the pending diagnosticsRunComplete() result
@@ -157,6 +180,15 @@ export function SettingsPanelAdapter({
     configLoad()
       .then((config) => setUsageReporting(config?.usage_reporting === true))
       .catch((err) => console.error("Failed to read the usage reporting setting:", err));
+  }, []);
+
+  useEffect(() => {
+    usagePreviousHang()
+      .then(setPreviousHang)
+      .catch((err) => console.error("Failed to read the previous hang report:", err));
+    usagePreviousHangAttachesLog()
+      .then(setPreviousHangAttachesLog)
+      .catch((err) => console.error("Failed to read whether the hang report attaches the log:", err));
   }, []);
 
   // Handlers
@@ -297,6 +329,49 @@ export function SettingsPanelAdapter({
     [usagePreview, handleShowUsagePreview]
   );
 
+  const handleSendPreviousHang = useCallback(async (send: boolean) => {
+    try {
+      await usageSendPreviousHang(send);
+    } catch (err) {
+      console.error("Failed to answer the previous hang report:", err);
+    } finally {
+      setPreviousHangAnswered(true);
+    }
+  }, []);
+
+  const handleOpenReportProblem = useCallback(async () => {
+    setReportProblemState("loading");
+    setReportProblemError(null);
+    try {
+      setReportProblemPreview(await readReportProblemPreview());
+      setReportProblemState("ready");
+    } catch (err) {
+      console.error("Could not read jamjam.log for the problem report:", err);
+      setReportProblemError(String(err));
+      setReportProblemState("error");
+    }
+  }, []);
+
+  const handleSendReportProblem = useCallback(async () => {
+    setReportProblemState("sending");
+    setReportProblemError(null);
+    try {
+      await reportProblemSend(reportProblemComment);
+      setReportProblemState("sent");
+    } catch (err) {
+      console.error("Could not send the problem report:", err);
+      setReportProblemError(String(err));
+      setReportProblemState("error");
+    }
+  }, [reportProblemComment]);
+
+  const handleCancelReportProblem = useCallback(() => {
+    setReportProblemState("idle");
+    setReportProblemPreview(null);
+    setReportProblemComment("");
+    setReportProblemError(null);
+  }, []);
+
   // Cancel diagnostics: drop the pending result and return to idle.
   const handleCancelDiagnostics = useCallback(() => {
     diagnosticsCancelledRef.current = true;
@@ -335,11 +410,23 @@ export function SettingsPanelAdapter({
       onOpenLogFolder={handleOpenLogFolder}
       logFolder={logFolder}
       logFolderError={logFolderError}
+      previousHang={previousHang}
+      onSendPreviousHang={handleSendPreviousHang}
+      previousHangAnswered={previousHangAnswered}
+      previousHangAttachesLog={previousHangAttachesLog}
       usageReporting={usageReporting}
       onUsageReportingChange={handleUsageReportingChange}
       usagePreview={usagePreview}
       onShowUsagePreview={handleShowUsagePreview}
       usagePreviewError={usagePreviewError}
+      reportProblemState={reportProblemState}
+      reportProblemPreview={reportProblemPreview}
+      reportProblemComment={reportProblemComment}
+      reportProblemError={reportProblemError}
+      onOpenReportProblem={handleOpenReportProblem}
+      onReportProblemCommentChange={setReportProblemComment}
+      onSendReportProblem={handleSendReportProblem}
+      onCancelReportProblem={handleCancelReportProblem}
     />
   );
 }

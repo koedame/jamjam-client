@@ -15,8 +15,7 @@ jamjam UI
 │   ├── JoinButton
 │   ├── SettingsButton
 │   ├── LoadingSpinner
-│   ├── ErrorMessage
-│   └── ConnectionHistory
+│   └── ErrorMessage
 │
 ├── MixerPanel               # ミキシングコンソール
 │   ├── ChannelStrip
@@ -104,7 +103,6 @@ jamjam UI
 | ChatInput | ChatPanel | chat-panel.md内 | [chat-panel.md#chatinput](./chat-panel.md#chatinput入力フィールド) |
 | EmojiPicker | ChatPanel | chat-panel.md内 | [chat-panel.md#emojipicker](./chat-panel.md#emojipicker) |
 | VerticalTabs | SettingsPanel | settings-panel.md内 | [settings-panel.md#verticaltabs](./settings-panel.md#verticaltabs垂直タブ) |
-| ConnectionHistory | ConnectionPanel | connection-panel.md内 | [connection-panel.md#connectionhistory](./connection-panel.md#接続履歴connectionhistory) |
 
 ---
 
@@ -197,7 +195,7 @@ interface ComponentProps {
 
 **タイプ**:
 - text: 通常のテキスト
-- code: 招待コード入力（6文字、大文字変換）
+- code: 招待コード入力（9文字、大文字変換）
 - password: パスワード入力
 
 **状態**:

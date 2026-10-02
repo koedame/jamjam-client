@@ -24,7 +24,7 @@ jamjam ブランドガイド準拠（ui.pen Screens/JoinRoom、2026-07-18 刷新
 - 1px ボーダー、`--radius-control`（8px）角丸
 - Primary ボタンは `--shadow-button` 程度の控えめな浮き上がりのみ（過剰なシャドウ禁止）
 - コード表示・入力は3文字区切りの見た目（例: `ABC-123`）で表示するが、実際の招待コードの値
-  自体はハイフンを含まない6文字英数字のまま（表示専用の `letter-spacing`/グルーピング）
+  自体はハイフンを含まない9文字英数字のまま（表示専用の `letter-spacing`/グルーピング）
 
 ---
 
@@ -53,7 +53,7 @@ jamjam ブランドガイド準拠（ui.pen Screens/JoinRoom、2026-07-18 刷新
 │    └──────────────────┘└─────────┘   │
 │                                       │
 │    ┌────────────────────────────┐    │
-│    │ ⚡ テストルーム (ABC234)   │    │  ← テストルームカード
+│    │ ⚡ テストルーム (ABC234XYZ)│    │  ← テストルームカード
 │    │   動作確認用のテストルーム │    │     （緑ボーダー、アイコン+説明文）
 │    │   に接続します             │    │
 │    └────────────────────────────┘    │
@@ -95,7 +95,7 @@ jamjam ブランドガイド準拠（ui.pen Screens/JoinRoom、2026-07-18 刷新
 │    └──────────────────┘└─────────┘   │
 │    ⚠ 無効なルームコードです          │  ← エラーメッセージ（入力行の下）
 │    ┌────────────────────────────┐    │
-│    │ ⚡ テストルーム (ABC234)   │    │
+│    │ ⚡ テストルーム (ABC234XYZ)│    │
 │    │   動作確認用のテストルーム │    │
 │    │   に接続します             │    │
 │    └────────────────────────────┘    │
@@ -476,13 +476,13 @@ stateDiagram-v2
 
 | ルール | 説明 |
 |--------|------|
-| 長さ | 6文字 |
+| 長さ | 9文字 |
 | 文字種 | 英数字（大文字小文字を区別しない） |
 | 自動変換 | 入力は自動で大文字に変換 |
 
 ```typescript
 function validateCode(code: string): boolean {
-  return /^[A-Z0-9]{6}$/i.test(code);
+  return /^[A-Z0-9]{9}$/i.test(code);
 }
 ```
 
@@ -542,53 +542,6 @@ function App() {
 
 ## 追加機能
 
-### 接続履歴（ConnectionHistory）
-
-過去に接続したルームの履歴を表示・管理。
-
-```typescript
-interface ConnectionHistoryEntry {
-  room_code: string;
-  label?: string;
-  connected_at: string; // ISO 8601 format
-}
-
-interface ConnectionPanelProps {
-  // ... 既存のProps
-  /** 接続履歴 */
-  connectionHistory?: ConnectionHistoryEntry[];
-  /** 履歴選択時のコールバック */
-  onHistorySelect?: (roomCode: string) => void;
-  /** 履歴削除時のコールバック */
-  onHistoryRemove?: (roomCode: string) => void;
-  /** 履歴タイトル */
-  historyTitle?: string;
-}
-```
-
-#### 日付表示フォーマット
-
-| 条件 | 表示形式 |
-|------|---------|
-| 今日 | `HH:MM` |
-| 昨日 | `Yesterday` |
-| 7日以内 | `N days ago` |
-| 7日以上 | `MMM D` (例: Jan 15) |
-
-#### ビジュアル
-
-```
-┌────────────────────────────────┐
-│         履歴                   │
-├────────────────────────────────┤
-│ ABC-123          14:30    [✕]   │
-│ XYZ789          Yesterday [✕]  │
-│ DEF456          Jan 15    [✕]  │
-└────────────────────────────────┘
-```
-
----
-
 ### テストルーム機能
 
 サーバーが示す、接続を試すためのルームへのクイックアクセス。アプリはコードを持たない。サーバーのルーム一覧で `test_room` の印が付いたルームがあれば、そのコードを `MainScreen` が渡す（[api/signaling.md](../../api/signaling.md)）。
@@ -618,7 +571,7 @@ interface ConnectionPanelProps {
 │    │      [ 参加 ]        │    │
 │                                │
 │ ┌────────────────────────────┐ │
-│ │ ⚡ テストルーム (ABC234)   │ │  ← 緑ボーダーのカード
+│ │ ⚡ テストルーム (ABC234XYZ)│ │  ← 緑ボーダーのカード
 │ │   動作確認用のテストルーム │ │
 │ │   に接続します             │ │
 │ └────────────────────────────┘ │
@@ -645,11 +598,6 @@ export interface ConnectionPanelProps {
   onCancel?: () => void;
   onOpenSettings?: () => void;
 
-  // 履歴機能
-  connectionHistory?: ConnectionHistoryEntry[];
-  onHistorySelect?: (roomCode: string) => void;
-  onHistoryRemove?: (roomCode: string) => void;
-
   // テストルーム機能
   testRoomCode?: string;
   testRoomTitle?: string;
@@ -666,7 +614,6 @@ export interface ConnectionPanelProps {
   joinText?: string;
   connectingText?: string;
   cancelText?: string;
-  historyTitle?: string;
 }
 ```
 
@@ -681,9 +628,7 @@ export interface ConnectionPanelProps {
   "session.welcome.title": "jamjam へようこそ",
   "session.welcome.subtitle": "低遅延で高品質な音声セッションを始めましょう",
   "session.testRoom.title": "テストルーム",
-  "session.testRoom.description": "動作確認用のテストルームに接続します",
-  "connectionHistory.title": "履歴",
-  "connectionHistory.remove": "削除"
+  "session.testRoom.description": "動作確認用のテストルームに接続します"
 }
 ```
 

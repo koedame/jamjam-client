@@ -18,7 +18,7 @@
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { ConnectionPanel, type ConnectionState, type ConnectionErrorKind, type ConnectionHistoryEntry as ConnectionPanelHistoryEntry } from "../components/ConnectionPanel";
+import { ConnectionPanel, type ConnectionState, type ConnectionErrorKind } from "../components/ConnectionPanel";
 import { MixerPanel, MasterSection, type Channel } from "../components/MixerPanel";
 import { ChatPanelAdapter } from "../components/ChatPanel";
 import { ConnectionIndicator, type ConnectionStatus } from "../components/ConnectionIndicator";
@@ -54,8 +54,6 @@ import {
   MIXER_CHANGED,
   type MixerPeerStrip,
   type MixerSnapshot,
-  configGetConnectionHistory,
-  configRemoveConnectionHistory,
   configGetSampleRate,
   configGetTransmitChannels,
   configGetEffectiveServerUrl,
@@ -63,8 +61,8 @@ import {
   type HelpEvent,
   type NetworkStats,
   type DetailedLatency,
-  type ConnectionHistoryEntry,
   type PeerAudioInfo,
+  type DeviceProblem,
 } from "../lib/tauri";
 import { JOIN_WINDOW_SIZE, MIXER_WINDOW_SIZE, JOIN_MIN_SIZE, MIXER_MIN_SIZE } from "../lib/windowSizes";
 
@@ -109,6 +107,7 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
   const [networkStats, setNetworkStats] = useState<NetworkStats | null>(null);
   const [connectionState, setConnectionState] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [deviceProblems, setDeviceProblems] = useState<DeviceProblem[]>([]);
   // Last bandwidth band we warned about, so the toast appears on the edge rather
   // than on every 100ms poll.
   const [warnedBandwidth, setWarnedBandwidth] = useState<string | null>(null);
@@ -118,7 +117,6 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
   const [delayNoticeVisible, setDelayNoticeVisible] = useState(false);
   const [inputLevel, setInputLevel] = useState(0);
   const [outputLevel, setOutputLevel] = useState(0);
-  const [connectionHistory, setConnectionHistory] = useState<ConnectionHistoryEntry[]>([]);
   const [peerAudio, setPeerAudio] = useState<PeerAudioInfo | null>(null);
   const [localSampleRate, setLocalSampleRate] = useState<number>(48000);
   const [localChannelCount, setLocalChannelCount] = useState<number>(2);
@@ -242,12 +240,6 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
   // starts as the app does (ADR-024 - the device identity is created and
   // presented by the Rust side without any user interaction).
   useEffect(() => {
-    // The rooms a person has been in are theirs: a helper is not shown them.
-    if (!helping) {
-      configGetConnectionHistory()
-        .then(setConnectionHistory)
-        .catch((e) => console.log("Failed to load connection history:", e));
-    }
     // Load sample rate (ADR-013)
     configGetSampleRate()
       .then(setLocalSampleRate)
@@ -256,16 +248,7 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
     configGetTransmitChannels()
       .then(setLocalChannelCount)
       .catch((e) => console.log("Failed to load transmit channel count, using default:", e));
-  }, [helping]);
-
-  // The backend saves a room to the history when it is joined.
-  const roomId = room?.room_id;
-  useEffect(() => {
-    if (roomId === undefined || helping) return;
-    configGetConnectionHistory()
-      .then(setConnectionHistory)
-      .catch((e) => console.log("Failed to load connection history:", e));
-  }, [roomId, helping]);
+  }, []);
 
   // Read the URL fresh on every attempt (not just at mount): a retry after
   // changing it in the Settings window must show what it is now dialing, not
@@ -417,6 +400,11 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
     return t("session.bandwidth.marginal");
   }, [networkStats, t]);
 
+  // The peer's app is older than the encryption, so what is said and played between the two is
+  // not encrypted. The user is told rather than left to assume it is (REQ-SEC-006).
+  const encryptionWarning =
+    networkStats?.encryption === "unencrypted" ? t("session.unencrypted") : null;
+
   // Warn once per band change rather than on every poll.
   useEffect(() => {
     const status = networkStats?.bandwidth_status ?? null;
@@ -445,6 +433,7 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
       setNetworkStats(null);
       setConnectionState(null);
       setConnectionError(null);
+      setDeviceProblems([]);
       setWarnedBandwidth(null);
       setDelayAdjustments(0);
       setInputLevel(0);
@@ -465,6 +454,9 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
       reading = true;
       try {
         const status = await streamingStatus();
+        // Whether or not a session is active: one that could not open its
+        // device never became active
+        setDeviceProblems(status.device_problems);
         if (status.is_active) {
           setDetailedLatency(status.latency);
           setNetworkStats(status.network);
@@ -522,21 +514,6 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
       setShowLeaveDialog(false);
     }
   };
-
-  // Handle selecting from connection history
-  const handleHistorySelect = useCallback((roomCode: string) => {
-    setInviteCode(roomCode);
-  }, []);
-
-  // Handle removing from connection history
-  const handleHistoryRemove = useCallback(async (roomCode: string) => {
-    try {
-      await configRemoveConnectionHistory(roomCode);
-      setConnectionHistory((prev) => prev.filter((e) => e.room_code !== roomCode));
-    } catch (e) {
-      console.error("Failed to remove from history:", e);
-    }
-  }, []);
 
   // Handle channel volume change from MixerPanel. The fader moves at once; the
   // backend's announcement then says where it stands.
@@ -674,19 +651,10 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
   // Get error message for ConnectionPanel
   const getErrorMessage = (): string | undefined => {
     if (failure !== null) {
-      const formatted = formatErrorForDisplay(failure, t);
+      const formatted = formatErrorForDisplay(failure, t, i18n.language);
       return `${formatted.title}: ${formatted.message}`;
     }
     return undefined;
-  };
-
-  // Convert connection history to ConnectionPanel format
-  const getConnectionPanelHistory = (): ConnectionPanelHistoryEntry[] => {
-    return connectionHistory.map((entry) => ({
-      room_code: entry.room_code,
-      label: entry.label ?? undefined, // Convert null to undefined
-      connected_at: entry.connected_at,
-    }));
   };
 
   // Cancel or retry the connection: drop what there is and connect again. The
@@ -725,9 +693,6 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
           onCancel={handleCancelConnection}
           onRetry={handleCancelConnection}
           onOpenSettings={handleSettingsClick}
-          connectionHistory={getConnectionPanelHistory()}
-          onHistorySelect={handleHistorySelect}
-          onHistoryRemove={handleHistoryRemove}
           title="jamjam"
           welcomeTitle={t("session.welcome.title")}
           welcomeSubtitle={t("session.welcome.subtitle")}
@@ -744,7 +709,6 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
                 : t("session.join.loading")
           }
           cancelText={t("common.button.cancel", "Cancel")}
-          historyTitle={t("connectionHistory.title")}
           testRoomCode={session?.test_room_invite_code ?? undefined}
           testRoomTitle={t("session.testRoom.title")}
           testRoomDescription={t("session.testRoom.description")}
@@ -913,11 +877,29 @@ export function MainScreen({ onSettingsClick, helper }: MainScreenProps) {
               />
             </div>
           )}
+          {encryptionWarning && (
+            <div className="main-footer__warning">
+              <Toast type="warning" message={encryptionWarning} />
+            </div>
+          )}
           {bandwidthWarning && (
             <div className="main-footer__warning">
               <Toast type="warning" message={bandwidthWarning} />
             </div>
           )}
+          {deviceProblems.map((problem) => (
+            <div key={problem.side} className="main-footer__warning">
+              <Toast
+                type="error"
+                message={t(`notification.deviceProblem.${problem.trouble}.${problem.side}`, {
+                  name: problem.device
+                    ? t("notification.deviceProblem.named", { device: problem.device })
+                    : "",
+                  rate: problem.sample_rate,
+                })}
+              />
+            </div>
+          ))}
           {connectionState === "failed" && (
             <div className="main-footer__warning">
               <Toast

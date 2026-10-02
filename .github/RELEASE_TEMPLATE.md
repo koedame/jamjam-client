@@ -29,7 +29,7 @@ By downloading and using this software, you agree to the [LICENSE](https://githu
 
 ## Third-Party Licenses
 
-This application includes third-party components. See [THIRD_PARTY_LICENSES.md](https://github.com/koedame/jamjam-client/blob/main/THIRD_PARTY_LICENSES.md) for details.
+This application includes third-party components. See [THIRD_PARTY_LICENSES.md](https://github.com/koedame/jamjam-client/blob/main/THIRD_PARTY_LICENSES.md) for details. The Linux AppImage also bundles system libraries (mostly LGPL); their notices and where to get their source are in `jamjam-linux-bundled-libraries.txt`, attached to this release.
 
 ## Checksums
 
@@ -42,7 +42,7 @@ SHA256 checksums:
 
 - **macOS**: 11.0 (Big Sur) or later
 - **Windows**: 10 (1903) or later
-- **Linux**: glibc 2.31+, ALSA or PipeWire
+- **Linux**: glibc 2.31+, PipeWire 1.0 or later (older `pipewire-alsa` makes the audio threads spin at 100% CPU)
 
 ## Feedback
 

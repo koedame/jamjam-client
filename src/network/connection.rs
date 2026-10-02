@@ -6,17 +6,20 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::time::interval;
 use tracing::{debug, info, trace, warn};
 
 use crate::audio::{create_codec, AudioCodec, CodecConfig, CodecType};
-use crate::protocol::{LatencyInfoMessage, LatencyPing, LatencyPong, Packet, PacketType};
+use crate::protocol::{
+    LatencyInfoMessage, LatencyPing, LatencyPong, Packet, PacketType, HEADER_SIZE,
+};
 
 use super::bandwidth::UDP_IP_OVERHEAD_BYTES;
+use super::encryption::{LinkSecurity, Opened, SecureLink};
 use super::error::NetworkError;
 use super::fec::{FecDecoder, FecEncoder, FecPacket};
-use super::link_facts::LinkFacts;
+use super::link_facts::{route_preference, LinkFacts, NEAREST_ROUTE_PREFERENCE};
 use super::quality::ConnectionQuality;
 use super::sequence_tracker::SequenceTracker;
 use super::transport::UdpTransport;
@@ -26,6 +29,9 @@ const RTT_SAMPLE_COUNT: usize = 10;
 
 /// Maximum pending pings before discarding old ones
 const MAX_PENDING_PINGS: usize = 10;
+
+/// How often our key is sent while the peer has not shown it has it
+const KEY_EXCHANGE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Connection statistics
 #[derive(Debug, Clone, Default)]
@@ -56,6 +62,11 @@ pub struct ConnectionStats {
     pub fec_recovered: Option<u64>,
     /// Connection uptime in seconds
     pub uptime_seconds: u64,
+    /// Whether what this link carries is encrypted
+    pub security: LinkSecurity,
+    /// Packets turned away because they were forged, repeated or from a peer that is not
+    /// encrypting while the link is
+    pub packets_refused: u64,
 }
 
 impl ConnectionStats {
@@ -76,6 +87,124 @@ impl ConnectionStats {
     pub fn quality(&self) -> Option<ConnectionQuality> {
         self.rtt_ms
             .map(|rtt_ms| ConnectionQuality::classify(rtt_ms, self.packet_loss_rate))
+    }
+}
+
+/// Where outgoing packets go, and the peer's other addresses
+///
+/// The address picked while connecting only shows that the peer's packets
+/// reach us from there. Whether ours reach the peer is known only once it
+/// answers a ping, so the route can move to an address the peer is heard
+/// from when it has not answered (REQ-CON-114).
+#[derive(Debug)]
+struct Route {
+    current: SocketAddr,
+    /// The peer's other addresses, in the order they were offered, with
+    /// whether the last send to each went out
+    others: Vec<(SocketAddr, bool)>,
+    /// When `current` was taken up, or the peer last answered a ping
+    answered_at: Instant,
+}
+
+impl Route {
+    fn new(current: SocketAddr, others: Vec<(SocketAddr, bool)>) -> Self {
+        Self {
+            current,
+            others,
+            answered_at: Instant::now(),
+        }
+    }
+
+    /// Whether `addr` is one of the peer's addresses
+    fn knows(&self, addr: SocketAddr) -> bool {
+        addr == self.current || self.others.iter().any(|&(other, _)| other == addr)
+    }
+
+    /// The peer answered a ping, so what we send reaches it
+    fn answered(&mut self) {
+        self.answered_at = Instant::now();
+    }
+
+    /// Moves to `from` when a packet arrived from there, we can send to it,
+    /// and the peer has not answered for `after`. Returns the address left.
+    fn follow(&mut self, from: SocketAddr, after: Duration) -> Option<SocketAddr> {
+        if from == self.current || self.answered_at.elapsed() < after {
+            return None;
+        }
+        let index = self
+            .others
+            .iter()
+            .position(|&(addr, sendable)| addr == from && sendable)?;
+        let left = std::mem::replace(&mut self.current, from);
+        self.others[index] = (left, true);
+        self.answered_at = Instant::now();
+        Some(left)
+    }
+
+    /// Notes whether the last send to `addr` went out
+    fn note_send(&mut self, addr: SocketAddr, sent: bool) {
+        if let Some(entry) = self.others.iter_mut().find(|(other, _)| *other == addr) {
+            entry.1 = sent;
+        }
+    }
+}
+
+/// Whether `bytes`, received from `from`, answer a probe sent to `candidates`
+///
+/// `sendable[i]` says whether the probe to `candidates[i]` went out. A packet
+/// that reaches us from an address we cannot send to shows a one-way path, and
+/// choosing it leaves the peer hearing nothing from us (REQ-CON-114).
+fn is_probe_answer(
+    candidates: &[SocketAddr],
+    sendable: &[bool],
+    from: SocketAddr,
+    bytes: &[u8],
+) -> bool {
+    let Some(index) = candidates.iter().position(|&addr| addr == from) else {
+        return false;
+    };
+    sendable[index]
+        && Packet::from_bytes(bytes)
+            .is_some_and(|packet| matches!(packet.packet_type, PacketType::KeepAlive))
+}
+
+/// Wait for the next probe answer on `transport`, `None` if it cannot be read.
+async fn next_probe_answer(
+    transport: &UdpTransport,
+    candidates: &[SocketAddr],
+    sendable: &[bool],
+) -> Option<SocketAddr> {
+    loop {
+        match transport.recv_raw().await {
+            Ok((buf, from_addr)) => {
+                if is_probe_answer(candidates, sendable, from_addr, &buf) {
+                    return Some(from_addr);
+                }
+            }
+            Err(e) => {
+                warn!("Error receiving probe response: {}", e);
+                return None;
+            }
+        }
+    }
+}
+
+/// Store the peer's latency info and tell the callback about it.
+fn note_peer_latency_info(
+    payload: &[u8],
+    callback: &Option<Arc<LatencyInfoCallback>>,
+    store: &RwLock<Option<PeerLatencyInfo>>,
+) {
+    if let Some(info) = LatencyInfoMessage::from_bytes(payload) {
+        let peer_info: PeerLatencyInfo = info.into();
+        debug!(
+            "Received peer latency info: capture={:.2}ms, playback={:.2}ms, jitter={:.2}ms",
+            peer_info.capture_buffer_ms, peer_info.playback_buffer_ms, peer_info.jitter_buffer_ms
+        );
+        if let Some(callback) = callback {
+            callback(peer_info.clone());
+        }
+        *store.write() = Some(peer_info);
     }
 }
 
@@ -409,7 +538,7 @@ pub type LatencyInfoCallback = Box<dyn Fn(PeerLatencyInfo) + Send + Sync + 'stat
 /// A P2P connection to a remote peer
 pub struct Connection {
     transport: Arc<UdpTransport>,
-    remote_addr: SocketAddr,
+    route: Arc<Mutex<Route>>,
     state: Arc<AtomicU8>,
     /// Last error message that caused connection failure (if any)
     last_error: Arc<std::sync::Mutex<Option<String>>>,
@@ -457,6 +586,30 @@ pub struct Connection {
     connection_start: Arc<std::sync::Mutex<Option<Instant>>>,
     /// How the link came up, for the usage log
     link_facts: Arc<LinkFacts>,
+    /// The encryption of this link: every packet goes out through it and comes in through it
+    secure_link: Arc<SecureLink>,
+    /// The latest latency info, kept while the link is still agreeing keys and sent when it
+    /// settles
+    pending_latency_info: Arc<Mutex<Option<LatencyInfoMessage>>>,
+    /// Sends our key until the peer has it, and what waited for the keys
+    secure_link_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Sends `packet` as the link allows: encrypted when the keys are agreed, and not at all
+/// while they are not, apart from keep-alives. Returns the bytes put on the wire, `0` for a
+/// packet that had to wait.
+async fn send_sealed(
+    transport: &UdpTransport,
+    link: &SecureLink,
+    packet: Packet,
+    addr: SocketAddr,
+) -> Result<usize, NetworkError> {
+    let Some(sealed) = link.seal(packet) else {
+        return Ok(0);
+    };
+    let len = HEADER_SIZE + sealed.payload.len();
+    transport.send_to(&sealed, addr).await?;
+    Ok(len)
 }
 
 impl Connection {
@@ -477,7 +630,10 @@ impl Connection {
     fn from_transport(transport: UdpTransport) -> Result<Self, NetworkError> {
         Ok(Self {
             transport: Arc::new(transport),
-            remote_addr: "0.0.0.0:0".parse().unwrap(),
+            route: Arc::new(Mutex::new(Route::new(
+                "0.0.0.0:0".parse().unwrap(),
+                Vec::new(),
+            ))),
             state: Arc::new(AtomicU8::new(ConnectionState::Disconnected as u8)),
             last_error: Arc::new(std::sync::Mutex::new(None)),
             sequence: AtomicU32::new(0),
@@ -504,6 +660,9 @@ impl Connection {
             latency_info_callback: None,
             connection_start: Arc::new(std::sync::Mutex::new(None)),
             link_facts: Arc::new(LinkFacts::new()),
+            secure_link: Arc::new(SecureLink::new()),
+            pending_latency_info: Arc::new(Mutex::new(None)),
+            secure_link_handle: None,
         })
     }
 
@@ -516,7 +675,7 @@ impl Connection {
     /// [`Self::connect_with_candidates`] selected, or the single address
     /// [`Self::connect`] was given.
     pub fn remote_addr(&self) -> SocketAddr {
-        self.remote_addr
+        self.route.lock().current
     }
 
     /// How the link came up (route, connect time, first audio). Stays valid
@@ -538,13 +697,13 @@ impl Connection {
         }
 
         let started = Instant::now();
-        self.remote_addr = remote_addr;
+        *self.route.lock() = Route::new(remote_addr, Vec::new());
         self.set_state(ConnectionState::Connecting);
         info!("Connecting to {}", remote_addr);
 
         // Send initial keep-alive to establish connection
         let packet = Packet::keep_alive(self.next_sequence());
-        self.transport.send_to(&packet, remote_addr).await?;
+        send_sealed(&self.transport, &self.secure_link, packet, remote_addr).await?;
 
         // Record connection start time
         if let Ok(mut start) = self.connection_start.lock() {
@@ -556,6 +715,7 @@ impl Connection {
         self.start_receive_loop();
         self.start_keepalive_loop();
         self.start_liveness_monitor();
+        self.start_secure_link_task();
 
         info!("Connected to {}", remote_addr);
         Ok(())
@@ -579,7 +739,9 @@ impl Connection {
 
     /// Connect to a remote peer using multiple address candidates (Happy Eyeballs style)
     ///
-    /// This function tries multiple candidates in parallel and uses the first one that responds.
+    /// This function tries multiple candidates in parallel and uses the nearest route that
+    /// responds (a LAN address, then an overlay such as Tailscale, then any other), waiting a
+    /// moment for a nearer one when the first response is not on the LAN.
     /// Candidates are tried in order of priority, with a small delay between starting each attempt.
     pub async fn connect_with_candidates(
         &mut self,
@@ -607,14 +769,21 @@ impl Connection {
         // - Use the first one that responds
         const PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
         const CANDIDATE_DELAY: Duration = Duration::from_millis(50);
+        // A peer probes our candidates CANDIDATE_DELAY apart, so an answer from
+        // the tenth can come nine delays after the first.
+        const ANSWER_GRACE: Duration = Duration::from_millis(500);
 
-        // Send probes to all candidates with small delays between each
+        // Send probes to all candidates with small delays between each. Which
+        // ones went out is kept: a candidate we cannot send to is not a route,
+        // however its packets reach us (REQ-CON-114).
+        let mut sendable = vec![false; candidates.len()];
         for (i, &addr) in candidates.iter().enumerate() {
             let packet = Packet::keep_alive(self.next_sequence());
-            if let Err(e) = self.transport.send_to(&packet, addr).await {
+            if let Err(e) = send_sealed(&self.transport, &self.secure_link, packet, addr).await {
                 debug!("Failed to send probe to candidate {}: {}", addr, e);
                 continue;
             }
+            sendable[i] = true;
             debug!("Sent connectivity probe to candidate {} ({})", i, addr);
 
             // Small delay before next candidate (Happy Eyeballs style)
@@ -623,34 +792,55 @@ impl Connection {
             }
         }
 
+        let other_candidates = |selected: SocketAddr| -> Vec<(SocketAddr, bool)> {
+            candidates
+                .iter()
+                .zip(&sendable)
+                .filter(|(&addr, _)| addr != selected)
+                .map(|(&addr, &sendable)| (addr, sendable))
+                .collect()
+        };
+
         // Wait for first response
         let transport = self.transport.clone();
-        let timeout = tokio::time::timeout(PROBE_TIMEOUT, async {
-            loop {
-                match transport.recv_raw().await {
-                    Ok((buf, from_addr)) => {
-                        // Check if response is from one of our candidates
-                        if candidates.contains(&from_addr) {
-                            if let Some(packet) = Packet::from_bytes(&buf) {
-                                if matches!(packet.packet_type, PacketType::KeepAlive) {
-                                    return Some(from_addr);
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Error receiving probe response: {}", e);
-                        return None;
-                    }
-                }
-            }
-        })
+        let timeout = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            next_probe_answer(&transport, candidates, &sendable),
+        )
         .await;
 
         match timeout {
-            Ok(Some(selected_addr)) => {
-                info!("Selected candidate: {} (first to respond)", selected_addr);
-                self.remote_addr = selected_addr;
+            Ok(Some(first_answer)) => {
+                // The first answer is the one that arrived first, and which
+                // route that is depends on the order the peer probed us in,
+                // not on how near the route is. Unless it is already the
+                // nearest kind, give the peer time to probe its other
+                // addresses, and take the nearest route that answers.
+                let mut selected_addr = first_answer;
+                if route_preference(first_answer) < NEAREST_ROUTE_PREFERENCE {
+                    let _ = tokio::time::timeout(ANSWER_GRACE, async {
+                        while let Some(answer) =
+                            next_probe_answer(&transport, candidates, &sendable).await
+                        {
+                            if route_preference(answer) > route_preference(selected_addr) {
+                                selected_addr = answer;
+                                if route_preference(answer) == NEAREST_ROUTE_PREFERENCE {
+                                    break;
+                                }
+                            }
+                        }
+                    })
+                    .await;
+                }
+                if selected_addr == first_answer {
+                    info!("Selected candidate: {} (first to respond)", selected_addr);
+                } else {
+                    info!(
+                        "Selected candidate: {} (nearer than {}, which responded first)",
+                        selected_addr, first_answer
+                    );
+                }
+                *self.route.lock() = Route::new(selected_addr, other_candidates(selected_addr));
 
                 // Record connection start time
                 if let Ok(mut start) = self.connection_start.lock() {
@@ -659,9 +849,11 @@ impl Connection {
 
                 self.link_facts.link_up(selected_addr, true, started);
                 self.set_state(ConnectionState::Connected);
+                self.discard_audio_queued_while_probing();
                 self.start_receive_loop();
                 self.start_keepalive_loop();
                 self.start_liveness_monitor();
+                self.start_secure_link_task();
 
                 Ok(())
             }
@@ -672,21 +864,28 @@ impl Connection {
                 ))
             }
             Err(_) => {
-                // Timeout - try fallback to first candidate
+                // Timeout - fall back to the first candidate we could send to
                 warn!("No candidate responded in time, falling back to first candidate");
                 self.set_state(ConnectionState::Connecting);
-                self.remote_addr = candidates[0];
+                let fallback = candidates
+                    .iter()
+                    .zip(&sendable)
+                    .find_map(|(&addr, &sendable)| sendable.then_some(addr))
+                    .unwrap_or(candidates[0]);
+                *self.route.lock() = Route::new(fallback, other_candidates(fallback));
 
                 // Record connection start time
                 if let Ok(mut start) = self.connection_start.lock() {
                     *start = Some(Instant::now());
                 }
 
-                self.link_facts.link_up(candidates[0], false, started);
+                self.link_facts.link_up(fallback, false, started);
                 self.set_state(ConnectionState::Connected);
+                self.discard_audio_queued_while_probing();
                 self.start_receive_loop();
                 self.start_keepalive_loop();
                 self.start_liveness_monitor();
+                self.start_secure_link_task();
 
                 Ok(())
             }
@@ -706,8 +905,11 @@ impl Connection {
         if let Some(handle) = self.liveness_handle.take() {
             handle.abort();
         }
+        if let Some(handle) = self.secure_link_handle.take() {
+            handle.abort();
+        }
 
-        info!("Disconnected from {}", self.remote_addr);
+        info!("Disconnected from {}", self.remote_addr());
     }
 
     /// Check if connected
@@ -884,10 +1086,25 @@ impl Connection {
             return Err(NetworkError::NotConnected);
         }
 
+        let remote_addr = self.remote_addr();
         let packet = Packet::latency_info(self.next_sequence(), info);
-        self.transport.send_to(&packet, self.remote_addr).await?;
+        let sent = send_sealed(&self.transport, &self.secure_link, packet, remote_addr).await?;
+        if sent == 0 {
+            // The keys are not agreed yet. The peer is told as soon as they are.
+            *self.pending_latency_info.lock() = Some(info.clone());
+            if self.secure_link.can_send_media() {
+                // They were agreed while this was being put aside, and the task that
+                // sends what waited may already have looked.
+                let waiting = self.pending_latency_info.lock().take();
+                if let Some(info) = waiting {
+                    let packet = Packet::latency_info(self.next_sequence(), &info);
+                    send_sealed(&self.transport, &self.secure_link, packet, remote_addr).await?;
+                }
+            }
+            return Ok(());
+        }
 
-        debug!("Sent latency info to {}", self.remote_addr);
+        debug!("Sent latency info to {}", remote_addr);
         Ok(())
     }
 
@@ -911,6 +1128,11 @@ impl Connection {
     pub async fn send_audio(&self, data: &[f32], timestamp: u32) -> Result<(), NetworkError> {
         if !self.state().can_transmit() {
             return Err(NetworkError::NotConnected);
+        }
+        // Until the keys are agreed there is nothing that may be sent, and audio that is
+        // encoded now would take sequence numbers the peer then sees as lost.
+        if !self.secure_link.can_send_media() {
+            return Ok(());
         }
 
         // Encode with the configured codec. Without `set_audio_encoding` this
@@ -944,10 +1166,10 @@ impl Connection {
         };
 
         let packet = Packet::audio(sequence, timestamp, bytes);
-        let packet_bytes = packet.to_bytes();
-        let len = packet_bytes.len() as u64;
 
-        self.transport.send_to(&packet, self.remote_addr).await?;
+        let remote_addr = self.remote_addr();
+        let len =
+            send_sealed(&self.transport, &self.secure_link, packet, remote_addr).await? as u64;
 
         self.packets_sent.fetch_add(1, Ordering::Relaxed);
         self.bytes_sent.fetch_add(len, Ordering::Relaxed);
@@ -955,10 +1177,8 @@ impl Connection {
         // FEC covers the group this packet completes.
         if let Some(fec) = generated {
             let fec_packet = Packet::fec(sequence, timestamp, fec.to_bytes());
-            let fec_len = fec_packet.to_bytes().len() as u64;
-            self.transport
-                .send_to(&fec_packet, self.remote_addr)
-                .await?;
+            let fec_len = send_sealed(&self.transport, &self.secure_link, fec_packet, remote_addr)
+                .await? as u64;
             self.bytes_sent.fetch_add(fec_len, Ordering::Relaxed);
             trace!("Sent FEC packet for group {}", fec.group_sequence);
         }
@@ -972,7 +1192,9 @@ impl Connection {
     /// reproduce a gap. This exists so loss handling can be exercised with an
     /// exact sequence pattern.
     pub async fn send_raw_to(&self, packet: &Packet, addr: SocketAddr) -> Result<(), NetworkError> {
-        self.transport.send_to(packet, addr).await
+        send_sealed(&self.transport, &self.secure_link, packet.clone(), addr)
+            .await
+            .map(|_| ())
     }
 
     /// Get connection statistics
@@ -1012,7 +1234,14 @@ impl Connection {
                 .as_ref()
                 .map(|_| self.fec_recovered.load(Ordering::Relaxed)),
             uptime_seconds: uptime,
+            security: self.secure_link.security(),
+            packets_refused: self.secure_link.refused(),
         }
+    }
+
+    /// Whether what this connection carries is encrypted
+    pub fn security(&self) -> LinkSecurity {
+        self.secure_link.security()
     }
 
     fn next_sequence(&self) -> u32 {
@@ -1021,6 +1250,30 @@ impl Connection {
 
     fn next_audio_sequence(&self) -> u32 {
         self.audio_sequence.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Drops the audio that reached the socket while connectivity was being
+    /// probed.
+    ///
+    /// The probes go out one candidate at a time and nothing is read until the
+    /// last is sent. A peer that is already connected sends audio all that time,
+    /// so it piles up in the socket and, read at once when the receive loop
+    /// starts, overflows the play-out buffer (REQ-CON-116). Audio that old is
+    /// not worth playing. The peer's latency info is kept.
+    fn discard_audio_queued_while_probing(&self) {
+        while let Some((bytes, _)) = self.transport.try_recv_raw() {
+            if let Some(packet) = Packet::from_bytes(&bytes) {
+                // An encrypted one cannot be read before the keys are agreed, and a peer that
+                // encrypts sends none until it knows we have them
+                if packet.packet_type == PacketType::LatencyInfo && !packet.flags.encrypted {
+                    note_peer_latency_info(
+                        &packet.payload,
+                        &self.latency_info_callback,
+                        &self.peer_latency_info,
+                    );
+                }
+            }
+        }
     }
 
     fn start_receive_loop(&mut self) {
@@ -1038,21 +1291,98 @@ impl Connection {
         let peer_latency_info = self.peer_latency_info.clone();
         let latency_info_callback = self.latency_info_callback.clone();
         let link_facts = self.link_facts.clone();
-        let remote_addr = self.remote_addr;
+        let route = self.route.clone();
+        let secure_link = self.secure_link.clone();
+        let pending_latency_info = self.pending_latency_info.clone();
+        let follow_after = self.reconnect_config.detect_after;
         let sequence = Arc::new(AtomicU32::new(1_000_000)); // Separate sequence for pong responses
 
         let handle = tokio::spawn(async move {
             let (mut rx, _recv_handle) = transport.clone().start_receive_loop();
 
-            while let Some((packet, _addr)) = rx.recv().await {
+            while let Some((packet, addr)) = rx.recv().await {
                 let current_state = ConnectionState::from_u8(state.load(Ordering::SeqCst));
                 if !current_state.can_transmit() {
                     break;
                 }
 
+                // What the packet took on the wire, before it is opened
+                let wire_len = (HEADER_SIZE + packet.payload.len()) as u64;
+
+                // The keys, and whether the peer encrypts at all, are settled by what the
+                // peer sends, so only what comes from where the peer is expected may settle
+                // them. Anyone who learns our port could otherwise send one plain packet
+                // and have the link give up encrypting.
+                let from_a_peer_address = route.lock().knows(addr);
+                if !from_a_peer_address
+                    && (packet.packet_type == PacketType::Control || !secure_link.is_decided())
+                {
+                    continue;
+                }
+
+                // Nothing below acts on a packet that has not been through the link: it is
+                // decrypted there, and a forged or repeated one stops there.
+                let opened = secure_link.open(packet);
+                if let Opened::Dropped(reason) = &opened {
+                    debug!("Dropped a packet from {}: {}", addr, reason);
+                    continue;
+                }
+
+                // The peer is heard from an address other than the one we send
+                // to, and has not answered us there: send to where it is heard.
+                // Its key counts: until the keys are agreed nothing else it sends
+                // is accepted, and no key can come back to it before the route
+                // is there.
+                let followed = route.lock().follow(addr, follow_after);
+                if let Some(left) = followed {
+                    info!(
+                        "The peer answers nothing on {}; sending to {} instead",
+                        left, addr
+                    );
+                    link_facts.route_moved(addr);
+                }
+
+                let packet = match opened {
+                    Opened::Packet(packet) => packet,
+                    Opened::KeyExchange { answer } => {
+                        if answer {
+                            let key = secure_link.key_exchange_packet();
+                            if let Err(e) = transport.send_to(&key, addr).await {
+                                warn!("Failed to answer the peer's key exchange: {}", e);
+                            }
+                            // The keys are ours now: something encrypted shows the peer it has
+                            // ours too, without waiting for the next keep-alive
+                            let keep_alive =
+                                Packet::keep_alive(sequence.fetch_add(1, Ordering::Relaxed));
+                            if let Err(e) =
+                                send_sealed(&transport, &secure_link, keep_alive, addr).await
+                            {
+                                warn!("Failed to send keep-alive: {}", e);
+                            }
+                        }
+                        continue;
+                    }
+                    Opened::Dropped(_) => continue,
+                };
+
                 *last_received.lock().unwrap() = Instant::now();
                 packets_received.fetch_add(1, Ordering::Relaxed);
-                bytes_received.fetch_add(packet.payload.len() as u64 + 12, Ordering::Relaxed);
+                bytes_received.fetch_add(wire_len, Ordering::Relaxed);
+
+                // What waited for the peer to show it has the keys goes as soon as it has
+                if secure_link.can_send_media() {
+                    let waiting = pending_latency_info.lock().take();
+                    if let Some(info) = waiting {
+                        let packet =
+                            Packet::latency_info(sequence.fetch_add(1, Ordering::Relaxed), &info);
+                        let remote_addr = route.lock().current;
+                        if let Err(e) =
+                            send_sealed(&transport, &secure_link, packet, remote_addr).await
+                        {
+                            warn!("Failed to send latency info: {}", e);
+                        }
+                    }
+                }
 
                 match packet.packet_type {
                     PacketType::Audio => {
@@ -1127,33 +1457,29 @@ impl Connection {
                                 sequence.fetch_add(1, Ordering::Relaxed),
                                 &pong,
                             );
-                            if let Err(e) = transport.send_to(&pong_packet, remote_addr).await {
+                            let remote_addr = route.lock().current;
+                            if let Err(e) =
+                                send_sealed(&transport, &secure_link, pong_packet, remote_addr)
+                                    .await
+                            {
                                 warn!("Failed to send latency pong: {}", e);
                             }
                             trace!("Responded to latency ping seq={}", ping.ping_sequence);
                         }
                     }
                     PacketType::LatencyPong => {
+                        route.lock().answered();
                         // Update RTT measurement
                         if let Some(pong) = LatencyPong::from_bytes(&packet.payload) {
                             rtt_measurement.write().process_pong(&pong);
                         }
                     }
                     PacketType::LatencyInfo => {
-                        // Store peer's latency info
-                        if let Some(info) = LatencyInfoMessage::from_bytes(&packet.payload) {
-                            let peer_info: PeerLatencyInfo = info.into();
-                            debug!(
-                                "Received peer latency info: capture={:.2}ms, playback={:.2}ms, jitter={:.2}ms",
-                                peer_info.capture_buffer_ms,
-                                peer_info.playback_buffer_ms,
-                                peer_info.jitter_buffer_ms
-                            );
-                            if let Some(ref callback) = latency_info_callback {
-                                callback(peer_info.clone());
-                            }
-                            *peer_latency_info.write() = Some(peer_info);
-                        }
+                        note_peer_latency_info(
+                            &packet.payload,
+                            &latency_info_callback,
+                            &peer_latency_info,
+                        );
                     }
                     _ => {}
                 }
@@ -1181,7 +1507,7 @@ impl Connection {
         let sequence_tracker_for_monitor = self.sequence_tracker.clone();
         let state_change_callback = self.state_change_callback.clone();
         let last_error = self.last_error.clone();
-        let remote_addr = self.remote_addr;
+        let route = self.route.clone();
 
         let handle = tokio::spawn(async move {
             let mut ticker = interval(config.check_interval);
@@ -1201,6 +1527,7 @@ impl Connection {
                     Ok(last) => last.elapsed(),
                     Err(_) => continue,
                 };
+                let remote_addr = route.lock().current;
 
                 let next = if silence >= config.give_up_after {
                     // Automatic recovery has had long enough. Hand the decision
@@ -1269,10 +1596,12 @@ impl Connection {
     fn start_keepalive_loop(&mut self) {
         let transport = self.transport.clone();
         let state = self.state.clone();
-        let remote_addr = self.remote_addr;
+        let route = self.route.clone();
         let sequence = AtomicU32::new(0);
         let rtt_measurement = self.rtt_measurement.clone();
+        let secure_link = self.secure_link.clone();
         let keep_alive_interval = self.reconnect_config.keep_alive_interval;
+        let probe_others_after = self.reconnect_config.detect_after;
 
         let handle = tokio::spawn(async move {
             let mut interval = interval(keep_alive_interval);
@@ -1285,24 +1614,99 @@ impl Connection {
                     break;
                 }
 
+                let remote_addr = route.lock().current;
+
                 // Send keep-alive
                 let packet = Packet::keep_alive(sequence.fetch_add(1, Ordering::Relaxed));
-                if let Err(e) = transport.send_to(&packet, remote_addr).await {
+                if let Err(e) = send_sealed(&transport, &secure_link, packet, remote_addr).await {
                     warn!("Failed to send keep-alive: {}", e);
                 }
 
-                // Send latency ping for RTT measurement
-                let ping = rtt_measurement.write().create_ping();
-                let ping_packet =
-                    Packet::latency_ping(sequence.fetch_add(1, Ordering::Relaxed), &ping);
-                if let Err(e) = transport.send_to(&ping_packet, remote_addr).await {
-                    warn!("Failed to send latency ping: {}", e);
+                // Send latency ping for RTT measurement, once the keys allow it
+                if secure_link.can_send_media() {
+                    let ping = rtt_measurement.write().create_ping();
+                    let ping_packet =
+                        Packet::latency_ping(sequence.fetch_add(1, Ordering::Relaxed), &ping);
+                    if let Err(e) =
+                        send_sealed(&transport, &secure_link, ping_packet, remote_addr).await
+                    {
+                        warn!("Failed to send latency ping: {}", e);
+                    }
+                    trace!("Sent latency ping seq={}", ping.ping_sequence);
                 }
-                trace!("Sent latency ping seq={}", ping.ping_sequence);
+
+                // No answer to our pings: the peer may not be reached on this
+                // address. Let it hear from us on its other ones too, so that
+                // it is heard from there and the route can follow (REQ-CON-114).
+                let others = {
+                    let route = route.lock();
+                    if route.answered_at.elapsed() >= probe_others_after {
+                        route.others.iter().map(|&(addr, _)| addr).collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                for addr in others {
+                    let packet = Packet::keep_alive(sequence.fetch_add(1, Ordering::Relaxed));
+                    let sent = send_sealed(&transport, &secure_link, packet, addr)
+                        .await
+                        .is_ok();
+                    route.lock().note_send(addr, sent);
+                }
             }
         });
 
         self.keepalive_handle = Some(handle);
+    }
+
+    /// Sends our key to the peer until it has shown it has it
+    ///
+    /// Every peer sends its key as soon as it is connected and again every
+    /// [`KEY_EXCHANGE_INTERVAL`], so one that comes up later, or a packet lost on the way,
+    /// does not leave the link without keys.
+    fn start_secure_link_task(&mut self) {
+        if let Some(handle) = self.secure_link_handle.take() {
+            handle.abort();
+        }
+
+        let transport = self.transport.clone();
+        let state = self.state.clone();
+        let route = self.route.clone();
+        let secure_link = self.secure_link.clone();
+        let sequence = AtomicU32::new(2_000_000);
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = interval(KEY_EXCHANGE_INTERVAL);
+
+            loop {
+                ticker.tick().await;
+
+                let current_state = ConnectionState::from_u8(state.load(Ordering::SeqCst));
+                if !current_state.can_transmit() {
+                    break;
+                }
+                let remote_addr = route.lock().current;
+
+                if secure_link.wants_key_exchange() {
+                    let key = secure_link.key_exchange_packet();
+                    if let Err(e) = transport.send_to(&key, remote_addr).await {
+                        warn!("Failed to send our key exchange: {}", e);
+                    }
+                    // With the keys ours, something encrypted shows the peer it has them too
+                    // (the answer to its key can be lost on the way).
+                    if secure_link.has_keys() {
+                        let packet = Packet::keep_alive(sequence.fetch_add(1, Ordering::Relaxed));
+                        if let Err(e) =
+                            send_sealed(&transport, &secure_link, packet, remote_addr).await
+                        {
+                            warn!("Failed to send keep-alive: {}", e);
+                        }
+                    }
+                }
+            }
+        });
+
+        self.secure_link_handle = Some(handle);
     }
 }
 
@@ -1412,6 +1816,90 @@ mod tests {
         assert_eq!(snapshot.first_audio_ms, None);
     }
 
+    /// A peer that already sends audio while we probe is one that does not encrypt: a peer
+    /// that does holds its audio back until we have shown it we have the keys.
+    ///
+    /// Verifies: REQ-CON-116
+    #[tokio::test]
+    async fn when_audio_arrived_while_probing_it_is_not_played_but_the_latency_info_is_kept() {
+        let mut conn1 = Connection::new("127.0.0.1:0").await.unwrap();
+        let old_app = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let heard = Arc::new(AtomicU32::new(0));
+        let counted = heard.clone();
+        conn1.set_audio_callback(move |_, _, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        // The peer is up first: it opens with a keep-alive, which is the answer to conn1's
+        // probe, and sends audio and its latency info while conn1 has not started reading.
+        let to = conn1.local_addr();
+        old_app
+            .send_to(&Packet::keep_alive(0).to_bytes(), to)
+            .await
+            .unwrap();
+        for sequence in 0..20 {
+            old_app
+                .send_to(&Packet::audio(sequence, 0, vec![0u8; 256]).to_bytes(), to)
+                .await
+                .unwrap();
+        }
+        let info = LatencyInfoMessage {
+            capture_buffer_ms: 1.0,
+            playback_buffer_ms: 2.0,
+            encode_ms: 0.0,
+            decode_ms: 0.0,
+            jitter_buffer_ms: 3.0,
+            frame_size: 64,
+            sample_rate: 48_000,
+            codec: "pcm".to_string(),
+            channel_count: 1,
+        };
+        old_app
+            .send_to(&Packet::latency_info(1, &info).to_bytes(), to)
+            .await
+            .unwrap();
+        let candidates = vec![
+            "127.0.0.1:59999".parse().unwrap(),
+            old_app.local_addr().unwrap(),
+        ];
+
+        conn1.connect_with_candidates(&candidates).await.unwrap();
+        old_app
+            .send_to(&Packet::audio(20, 0, vec![0u8; 256]).to_bytes(), to)
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            if heard.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(
+            heard.load(Ordering::SeqCst),
+            1,
+            "only the audio sent after the connection was up"
+        );
+        assert!(conn1.peer_latency_info().is_some());
+    }
+
+    /// Verifies: REQ-CON-115
+    #[tokio::test]
+    async fn when_the_first_answer_is_on_the_nearest_kind_of_route_the_connection_does_not_wait_for_others(
+    ) {
+        let mut conn1 = Connection::new("127.0.0.1:0").await.unwrap();
+        let mut conn2 = Connection::new("127.0.0.1:0").await.unwrap();
+        conn2.connect(conn1.local_addr()).await.unwrap();
+        let candidates = vec!["127.0.0.1:59999".parse().unwrap(), conn2.local_addr()];
+
+        conn1.connect_with_candidates(&candidates).await.unwrap();
+
+        let snapshot = conn1.link_facts().snapshot();
+        assert!(
+            snapshot.connect_ms.is_some_and(|ms| ms < 400),
+            "a loopback answer needs no grace: {snapshot:?}"
+        );
+    }
+
     /// Verifies: REQ-TEL-015
     #[tokio::test]
     async fn when_no_candidate_answers_the_link_facts_say_the_route_was_not_confirmed() {
@@ -1432,6 +1920,163 @@ mod tests {
         );
     }
 
+    fn addr(text: &str) -> SocketAddr {
+        text.parse().unwrap()
+    }
+
+    /// Verifies: REQ-CON-114
+    #[test]
+    fn when_a_candidate_we_could_not_send_to_answers_the_answer_is_not_taken() {
+        let candidates = [addr("192.168.1.10:5000"), addr("100.64.0.2:5000")];
+        let keep_alive = Packet::keep_alive(0).to_bytes();
+
+        assert!(!is_probe_answer(
+            &candidates,
+            &[false, true],
+            candidates[0],
+            &keep_alive
+        ));
+        assert!(is_probe_answer(
+            &candidates,
+            &[false, true],
+            candidates[1],
+            &keep_alive
+        ));
+    }
+
+    /// Verifies: REQ-CON-114
+    #[test]
+    fn when_the_answer_comes_from_no_candidate_it_is_not_taken() {
+        let candidates = [addr("192.168.1.10:5000")];
+        let keep_alive = Packet::keep_alive(0).to_bytes();
+
+        assert!(!is_probe_answer(
+            &candidates,
+            &[true],
+            addr("192.168.1.10:5001"),
+            &keep_alive
+        ));
+    }
+
+    /// Verifies: REQ-CON-114
+    #[test]
+    fn when_the_packet_from_a_candidate_is_not_a_keep_alive_it_is_not_an_answer() {
+        let candidates = [addr("192.168.1.10:5000")];
+        let audio = Packet::audio(0, 0, vec![0; 4]).to_bytes();
+
+        assert!(!is_probe_answer(
+            &candidates,
+            &[true],
+            candidates[0],
+            &audio
+        ));
+        assert!(!is_probe_answer(
+            &candidates,
+            &[true],
+            candidates[0],
+            &[0xff; 3]
+        ));
+    }
+
+    /// Verifies: REQ-CON-114
+    #[test]
+    fn when_the_peer_has_not_answered_a_packet_from_another_address_moves_the_route_there() {
+        let lan = addr("192.168.1.10:5000");
+        let vpn = addr("100.64.0.2:5000");
+        let mut route = Route::new(lan, vec![(vpn, true)]);
+
+        assert_eq!(route.follow(vpn, Duration::ZERO), Some(lan));
+
+        assert_eq!(route.current, vpn);
+        assert_eq!(route.others, vec![(lan, true)]);
+    }
+
+    /// Verifies: REQ-CON-114
+    #[test]
+    fn when_the_peer_answered_recently_the_route_stays_where_it_is() {
+        let lan = addr("192.168.1.10:5000");
+        let vpn = addr("100.64.0.2:5000");
+        let mut route = Route::new(lan, vec![(vpn, true)]);
+        route.answered();
+
+        assert_eq!(route.follow(vpn, Duration::from_secs(60)), None);
+
+        assert_eq!(route.current, lan);
+    }
+
+    /// Verifies: REQ-CON-114
+    #[test]
+    fn when_we_could_not_send_to_the_address_the_peer_is_heard_from_the_route_stays_where_it_is() {
+        let lan = addr("192.168.1.10:5000");
+        let vpn = addr("100.64.0.2:5000");
+        let mut route = Route::new(lan, vec![(vpn, false)]);
+
+        assert_eq!(route.follow(vpn, Duration::ZERO), None);
+
+        assert_eq!(route.current, lan);
+    }
+
+    /// Verifies: REQ-CON-114
+    #[test]
+    fn when_a_packet_comes_from_an_address_that_is_not_the_peers_the_route_stays_where_it_is() {
+        let lan = addr("192.168.1.10:5000");
+        let mut route = Route::new(lan, vec![(addr("100.64.0.2:5000"), true)]);
+
+        assert_eq!(route.follow(addr("203.0.113.9:5000"), Duration::ZERO), None);
+
+        assert_eq!(route.current, lan);
+    }
+
+    /// Verifies: REQ-CON-114
+    #[tokio::test]
+    async fn when_no_candidate_answers_the_first_one_we_could_send_to_is_used() {
+        let mut conn = Connection::new("127.0.0.1:0").await.unwrap();
+        // An IPv6 address cannot be sent to from the IPv4 audio socket.
+        let unreachable = addr("[::1]:59997");
+        let silent = addr("127.0.0.1:59998");
+
+        conn.connect_with_candidates(&[unreachable, silent])
+            .await
+            .unwrap();
+
+        assert_eq!(conn.remote_addr(), silent);
+    }
+
+    /// Verifies: REQ-CON-114
+    #[tokio::test]
+    async fn when_the_peer_answers_nothing_on_the_chosen_address_but_is_heard_elsewhere_sends_go_there(
+    ) {
+        let quick = ReconnectConfig {
+            keep_alive_interval: Duration::from_millis(100),
+            detect_after: Duration::from_millis(300),
+            give_up_after: Duration::from_secs(30),
+            check_interval: Duration::from_millis(50),
+        };
+        let mut conn1 = Connection::new("127.0.0.1:0").await.unwrap();
+        conn1.set_reconnect_config(quick);
+        let mut conn2 = Connection::new("127.0.0.1:0").await.unwrap();
+        conn2.set_reconnect_config(quick);
+        let silent = addr("127.0.0.1:59999");
+        // Nobody answers the probes yet, so the first candidate is taken.
+        conn1
+            .connect_with_candidates(&[silent, conn2.local_addr()])
+            .await
+            .unwrap();
+        assert_eq!(conn1.remote_addr(), silent);
+
+        // The peer comes up afterwards and is heard from its own address.
+        conn2.connect(conn1.local_addr()).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while conn1.remote_addr() != conn2.local_addr() || conn1.rtt_ms().is_none() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("sends should move to the address the peer is heard from, and be answered");
+        assert_eq!(conn1.state(), ConnectionState::Connected);
+    }
+
     /// Verifies: REQ-TEL-015
     #[tokio::test]
     async fn when_audio_arrives_the_link_facts_have_a_first_audio_time() {
@@ -1441,8 +2086,9 @@ mod tests {
         conn2.connect(conn1.local_addr()).await.unwrap();
         assert_eq!(conn1.link_facts().snapshot().first_audio_ms, None);
 
-        conn2.send_audio(&[0.0f32; 64], 0).await.unwrap();
+        // Audio waits for the keys to be agreed, so keep sending until one arrives.
         for _ in 0..50 {
+            conn2.send_audio(&[0.0f32; 64], 0).await.unwrap();
             if conn1.link_facts().snapshot().first_audio_ms.is_some() {
                 break;
             }

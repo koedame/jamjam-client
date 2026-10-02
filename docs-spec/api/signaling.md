@@ -1,8 +1,3 @@
----
-sidebar_label: Signaling
-sidebar_position: 3
----
-
 <!-- このドキュメントは実装の正です。変更時は実装も同期すること -->
 
 # Signaling API
@@ -226,7 +221,7 @@ async fn leave_room(&self) -> Result<(), SignalingError>;
 
 作成者を含め、誰が退出してもルーム自体は存続し、残りの参加者のセッションは継続される
 （[ADR-016](../adr/ADR-016-remove-host-privilege-concept.md)）。参加者自身による「ルーム終了」
-操作は存在しない。サーバーがルームを閉じた場合は `RoomClosed` が届く（Section 5）。
+操作は存在しない。
 
 ---
 
@@ -328,7 +323,7 @@ sequenceDiagram
 `settings_help`（設定の手伝い。[ADR-044](../adr/ADR-044-portals-and-permissions.md) §5）だけ。中身は `kind` で区別する:
 `request`（手伝わせて）・`accepted`（いいよ。`session` は手伝われる側が中継に繋いで待っている手伝いの番号。128 ビットの乱数の
 16 進 32 桁で、手伝う側は同じ番号で中継に繋ぐ）・`declined`（断る。`busy` なら別の人に手伝われている）・
-`stop`（手伝いをやめる。`role` は送り手の側 `helper` / `helped`）・
+`stop`（手伝いをやめる。`role` は送り手の側 `helper` / `helped`。`session` は終わった手伝いの番号で、許可の前の申し出には付かない。番号があるときは、その番号の手伝いだけを終える。同じ相手と手伝いをやり直したあとに前の手伝いの `stop` が遅れて届いても、やり直した手伝いを終えないため。番号が無いときは、送り手との手伝いを終える）・
 `notice`（ルーム全員へ。チャットの記録用。`event` は `started` / `changed` / `ended`、`changed` には変わった設定の名前 `setting` が付く。
 手伝う人は `helper` の参加者 ID で、名前は受け取った側が引く）。
 手伝いの中身（手伝う人の操作と相手の状態）はシグナリングを通らず、サーバーの中継（WebSocket）を通る。
@@ -407,14 +402,6 @@ enum SignalingMessage {
     PeerUpdated { peer: PeerInfo },
     /// エラー
     Error { message: String },
-    /// サーバーがルームを閉じた。
-    /// ルーム内の全ピアへブロードキャストされ、受信したクライアントは即座に切断する。
-    /// クライアント発の「ルーム終了」メッセージは存在しない（作成者含め参加者に
-    /// ルーム終了の特権はない。[ADR-016](../adr/ADR-016-remove-host-privilege-concept.md)）。
-    RoomClosed { reason: String },
-    /// サーバーがこの参加者（`peer_id`）をルームから外した。ルーム内の全ピアへブロードキャスト
-    /// されるが、`peer_id` が自分自身と一致するクライアントのみ切断すべき。
-    Kicked { peer_id: Uuid, reason: String },
     /// チャットメッセージをルーム内の全ピアへブロードキャストする（送信者本人にも返る）。
     /// 送信者（`sender_id` / `sender_name`）は、サーバーが送ってきた接続の参加者の ID と名前に置き換えて配る。
     /// クライアントが書いた値は使われない
@@ -514,8 +501,6 @@ stateDiagram-v2
     JoiningRoom --> Connected: RoomNotFound / RoomFull / InvalidPassword
 
     InRoom --> Connected: leave_room()
-    InRoom --> Disconnected: RoomClosed
-    InRoom --> Disconnected: Kicked (peer_id matches self)
     InRoom --> Disconnected: Disconnected event
 
     Connected --> Disconnected: Disconnected event

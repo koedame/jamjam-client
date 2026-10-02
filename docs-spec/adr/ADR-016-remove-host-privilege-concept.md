@@ -1,15 +1,10 @@
----
-sidebar_label: "ADR-016: Remove Host Privilege Concept"
-sidebar_position: 16
----
-
 <!-- このドキュメントは実装の正です。変更時は実装も同期すること -->
 
 # ADR-016: ルーム作成者特権（ホスト概念）の廃止
 
 ## Context
 
-`ui.pen`（Pencil デザインファイル）の用語集 `Doc/Glossary` に以下の決定が記録されている（2026-07-11付）:
+UI 用語集（[`docs-spec/ui/glossary.md`](../ui/glossary.md)。当時は `ui.pen`（Pencil デザインファイル）の `Doc/Glossary` にあった）に以下の決定が記録されている（2026-07-11付）:
 
 > 「作成者」= ルームを作成した参加者。特権的な「ホスト」という概念は廃止し、他の参加者とは
 > フラットな関係とする。

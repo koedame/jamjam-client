@@ -1,8 +1,3 @@
----
-sidebar_label: Overview
-sidebar_position: 1
----
-
 <!-- このドキュメントは実装の正です。変更時は実装も同期すること -->
 
 # jamjam Specification Documents
@@ -69,8 +64,13 @@ sidebar_position: 1
 | [ADR-042](./adr/ADR-042-usage-reporting-includes-investigation-data.md) | 利用状況の送信に、不具合の調査に役立つ項目（自分の IP アドレス・デバイス ID・接続先）を含める |
 | [ADR-043](./adr/ADR-043-remote-operation-rpc.md) | アプリの操作は名前付きのコマンド（RPC）。E2E は全部を呼ぶ（手伝いの部分は ADR-044 が置き換えた） |
 | [ADR-044](./adr/ADR-044-portals-and-permissions.md) | アプリの操作は「口」ごとに呼べる範囲を 1 つの表で決める。遠隔の口は WebSocket の中継に載せ、権限はデバッグモード（ベータ版だけ）と手伝いの 2 段 |
+| [ADR-045](./adr/ADR-045-beta-self-update.md) | ベータ版も自動更新する。ベータ版は `X.Y.Z-N` の版としてビルドし、更新情報は固定タグの Release `beta-channel` から読む（ADR-041 の 4 節を置き換えた） |
 | [ADR-046](./adr/ADR-046-audio-gaps-are-measured-not-guessed.md) | 受信バッファの自動調整は空読みも欠けとして数える。帯域の判定は相手が送ったパケットの欠けの割合で行う。音の欠けの原因は飛行記録（`debug.audio_timing`）で測る |
 | [ADR-047](./adr/ADR-047-git-flow-branching.md) | 開発は develop で進め、main には出した正式版だけを置く。ベータ版はタグを打ったときだけ公開し、タグは対になるサーバー側のリポジトリと同じ名前を同じときに打つ |
+| [ADR-049](./adr/ADR-049-channels-fit-when-opened-and-pan-follows-the-sender.md) | デバイスへのチャンネルの当てはめは開くときだけ（保存は書き換えない）。同じ番号の組は 1 チャンネル。受け手のパンは届いた音がステレオかモノラルかで変わる |
+| [ADR-050](./adr/ADR-050-device-calls-are-bounded.md) | 固まったオーディオドライバへの呼び出しには上限を付け、待ちが設定の読み書き・別のデバイスへの切り替え・ネットワークを止めないようにする。開けなかったデバイスは画面に出す |
+| [ADR-051](./adr/ADR-051-route-follows-the-peers-answers.md) | 音声の送り先は、こちらから送れた候補の中から選ぶ。相手が ping に応答しないまま別の候補から声が届いたら、送り先をそちらに移す |
+| [ADR-054](./adr/ADR-054-route-is-the-nearest-that-answers.md) | 送り先は、応答した候補のうち近い経路（LAN、Tailscale などの重ね合わせ網、その他の順）にする。候補の優先度もこの順に並べ、最初の応答が LAN でなければ 500 ms まで近い経路の応答を待つ |
 
 ---
 
@@ -113,6 +113,6 @@ sidebar_position: 1
 
 ## 開発者向けドキュメント
 
-開発者向けの解説資料（ガイド、チュートリアル等）は [Docs](/docs/intro) を参照。
+開発者向けの解説資料（ガイド、チュートリアル等）は [docs/](../docs/README.md) を参照。
 
-> docs-site/ の内容は仕様ではない。実装の正は常に本ディレクトリ（docs-spec/）である。
+> docs/ の内容は仕様ではない。実装の正は常に本ディレクトリ（docs-spec/）である。

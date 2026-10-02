@@ -55,7 +55,7 @@
     },
     "join": {
       "button": "Join",
-      "placeholder": "ABC234",
+      "placeholder": "ABC234XYZ",
       "loading": "Connecting..."
     },
     "leave": {
@@ -86,6 +86,7 @@
       "title": "Test Room",
       "description": "Connect to a standing room for testing"
     },
+    "unencrypted": "Audio with this peer is not encrypted (their app is an older version)",
     "bandwidth": {
       "insufficient": "Bandwidth is insufficient (about {{required}} Mbps needed)",
       "marginal": "Bandwidth headroom is running low",
@@ -230,6 +231,19 @@
       "logTitle": "Log file",
       "logDescription": "If something does not work, attach jamjam.log from this folder when you report it.",
       "openLogFolder": "Open log folder",
+      "previousHang": {
+        "title": "Last time",
+        "description": "jamjam did not close normally last time - it seems to have been stuck while {{stage}}. Send a small report (nothing about your audio, chat or rooms) so this can be found and fixed?",
+        "descriptionWithLog": "jamjam did not close normally last time - it seems to have been stuck while {{stage}}. Send a small report, together with the current jamjam.log, so this can be found and fixed? The log can include the server address, your audio device names, the room ID, and other participants' identifiers.",
+        "stageAppExit": "closing",
+        "stageRestart": "restarting",
+        "stageUpdateApply": "installing an update",
+        "stageDeviceOpen": "opening an audio device",
+        "stageUnknown": "running",
+        "send": "Send report",
+        "dismiss": "Don't send",
+        "thanks": "Okay."
+      },
       "usageTitle": "Usage data",
       "usageToggle": "Send usage data",
       "usageDescription": "Off by default. When you turn it on, jamjam sends how it runs on your machine to the jamjam server, so that problems on particular machines and connections can be found and fixed.",
@@ -240,6 +254,19 @@
       "usageShow": "Show what is sent",
       "usagePreviewEmpty": "Nothing is waiting to be sent yet.",
       "usagePreviewOff": "Off: nothing is collected or sent, and there is no install ID.",
+      "reportProblem": {
+        "title": "Report a problem",
+        "description": "Send the current jamjam.log and a short comment about what is going wrong right now.",
+        "start": "Report a problem",
+        "loading": "Loading...",
+        "commentPlaceholder": "What happened? (optional)",
+        "send": "Send",
+        "sending": "Sending...",
+        "cancel": "Cancel",
+        "sent": "Sent. Thank you.",
+        "sentClose": "Close",
+        "retry": "Try again"
+      },
       "description": "Diagnose network, audio, and CPU performance to recommend optimal settings.",
       "run": "Run Diagnostics",
       "running": "Running diagnostics...",
@@ -318,6 +345,14 @@
         "outputEnumerationFailed": {
           "message": "Failed to enumerate output devices",
           "suggestion": "Error: {{error}}. Try restarting your audio interface."
+        },
+        "inputDeviceUnresponsive": {
+          "message": "The input device is not responding",
+          "suggestion": "The audio driver did not answer in time, so the input devices could not be read. Reconnect the audio interface, or restart it and the computer's audio service, then run the diagnostics again."
+        },
+        "outputDeviceUnresponsive": {
+          "message": "The output device is not responding",
+          "suggestion": "The audio driver did not answer in time, so the output devices could not be read. Reconnect the audio interface, or restart it and the computer's audio service, then run the diagnostics again."
         },
         "noInputDevices": {
           "message": "No input devices found",
@@ -449,6 +484,10 @@
   },
   "error": {
     "connection": {
+      "clockSkew": {
+        "title": "This Computer's Clock Is Off",
+        "message": "The clock is about {{amount}} off from the server's. Set the time correctly and jamjam connects again by itself."
+      },
       "timeout": {
         "title": "Connection Failed",
         "message": "Could not find the other party. Please check the invite code."
@@ -557,14 +596,22 @@
     "connected": "Connected",
     "disconnected": "Disconnected",
     "bandwidthRecovered": "Bandwidth recovered",
-    "delayAdjusted": "Buffer size adjusted"
-  },
-  "connectionHistory": {
-    "title": "Recent Connections",
-    "remove": "Remove",
-    "empty": "No connection history",
-    "yesterday": "Yesterday",
-    "daysAgo": "{{days}} days ago"
+    "delayAdjusted": "Buffer size adjusted",
+    "deviceProblem": {
+      "named": " ({{device}})",
+      "unresponsive": {
+        "input": "Input device isn't responding{{name}}",
+        "output": "Output device isn't responding{{name}}"
+      },
+      "failed": {
+        "input": "Couldn't open the input device{{name}}",
+        "output": "Couldn't open the output device{{name}}"
+      },
+      "unsupported_format": {
+        "input": "Couldn't open the input device{{name}} at {{rate}} Hz. In your sound settings, set this device's format to {{rate}} Hz",
+        "output": "Couldn't open the output device{{name}} at {{rate}} Hz. In your sound settings, set this device's format to {{rate}} Hz"
+      }
+    }
   },
   "diagnostics": {
     "title": "Self-Diagnostics",

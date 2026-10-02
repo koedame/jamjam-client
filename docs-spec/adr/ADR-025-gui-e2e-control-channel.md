@@ -1,8 +1,3 @@
----
-sidebar_label: "ADR-025: GUI E2E Control Channel"
-sidebar_position: 25
----
-
 <!-- このドキュメントは実装の正です。変更時は実装も同期すること -->
 
 # ADR-025: GUI E2E 制御チャネルとページオブジェクトモデルの導入
@@ -108,7 +103,7 @@ Tauri は Windows で `eval_with_callback` の例外が無視されると文書�
 
 ```rust
 let screen = app.connection_screen();
-screen.invite_code_input().type_text("ABC234")?;
+screen.invite_code_input().type_text("ABC234XYZ")?;
 assert!(screen.join_button().is_enabled()?);
 ```
 

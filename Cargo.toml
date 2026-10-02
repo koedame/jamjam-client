@@ -3,6 +3,7 @@ name = "jamjam"
 version = "0.1.0"
 edition = "2021"
 license-file = "LICENSE"
+publish = false
 description = "Low-latency P2P audio communication for musicians"
 repository = "https://github.com/koedame/jamjam-client"
 
@@ -15,6 +16,14 @@ e2e-loopback = []        # Audio loopback tests (no network)
 e2e-network-local = []   # Local network tests (localhost)
 e2e-remote = []          # Remote node tests
 e2e-full = ["e2e-loopback", "e2e-network-local", "e2e-remote"]
+
+# Lets a caller make the calls into the audio driver stall, to test what the
+# app does when a driver hangs. Absent from every release build.
+fault-injection = []
+
+# Lets a debug build measure the round trip of an output cabled to an input
+# (`audio::device_loop`). Absent from every release build.
+device-loop = []
 
 [dependencies]
 # Audio I/O
@@ -49,7 +58,6 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 directories = "6"
 chrono = { version = "0.4", features = ["serde"] }
-bincode = "1"
 
 # Logging
 tracing = "0.1"
@@ -100,6 +108,13 @@ local-ip-address = "0.6"
 # OS version and installed memory for the environment probe
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
+[target.'cfg(windows)'.dependencies]
+# ASIO support. Talks to the driver's COM interface directly, without
+# Steinberg's ASIO SDK: the SDK's proprietary license needs a signed
+# submission, and its GPLv3 option conflicts with this app's source-available
+# license.
+azo = "0.2"
+
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
@@ -111,7 +126,7 @@ hound = "3.5"  # WAV file handling for audio quality tests
 tempfile = "3"
 
 # Checks the usage log lines against schema.json in tests
-jsonschema = { version = "0.56", default-features = false }
+jsonschema = { version = "0.57", default-features = false }
 
 
 [profile.release]

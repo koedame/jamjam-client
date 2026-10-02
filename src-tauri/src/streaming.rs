@@ -1,7 +1,8 @@
 //! Audio streaming IPC commands for Tauri
 //!
-//! Manages P2P audio streaming with a dedicated audio thread to handle
-//! the non-Send+Sync AudioEngine.
+//! Manages P2P audio streaming with a dedicated audio thread that also
+//! carries the network. Opening a device, which a hung driver can make take
+//! as long as it likes, is done off that thread (`audio_slot`).
 //!
 //! Performance optimizations for 32-sample buffers:
 //! - Uses rtrb (real-time safe ring buffer) instead of tokio channels
@@ -19,16 +20,24 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use jamjam::audio::{
-    capture_attempts, capture_to_wire, AudioConfig, AudioEngine, AudioError, AudioPreset, DeviceId,
-    FlightKind, FlightRecorder, LocalMonitor, OutputRoute, PeerRateChange, PlayoutResult,
-    ReceivePath, ADAPT_INTERVAL, WIRE_CHANNELS,
+    capture_attempts, capture_to_wire, pan_received, AudioConfig, AudioEngine, AudioError,
+    AudioPreset, DeviceId, FlightKind, FlightRecorder, GainRamp, LocalMonitor, MonitorTap,
+    OutputRoute, PeerRateChange, PlayoutResult, ReceivePath, RecordingFeed, RecordingTap,
+    ADAPT_INTERVAL, WIRE_CHANNELS,
 };
+#[cfg(target_os = "windows")]
+use jamjam::audio::{driver_name_of, AsioDuplex, OPEN_TIMEOUT};
 use jamjam::network::{
     required_bps, status_label, AudioEncodingConfig, BandwidthEstimator, BandwidthStatus,
     BandwidthVerdict, Connection, ConnectionState, ConnectionStats, LatencyBreakdown, LinkFacts,
     LinkSnapshot, LocalLatencyInfo, PeerLatencyInfo, QualityMonitor,
 };
 use jamjam::protocol::LatencyInfoMessage;
+
+#[cfg(target_os = "windows")]
+use crate::audio_slot::AsioSwitch;
+use crate::audio_slot::DeviceSlot;
+use crate::settings::{pair_in_use, Devices};
 
 /// How long the receive loop waits when it has nothing to hand to playback.
 ///
@@ -197,6 +206,8 @@ pub struct StreamingState {
     bandwidth: Arc<RwLock<Option<BandwidthSnapshot>>>,
     /// Connection state as reported by the audio thread (ADR-022)
     connection_state: Arc<RwLock<ConnectionStateSnapshot>>,
+    /// Devices the audio thread could not open, one per direction at most
+    device_problems: Arc<RwLock<Vec<DeviceProblem>>>,
     /// Jitter buffer delay in microseconds (updated by audio thread)
     ///
     /// Integer microseconds rather than a float, so it fits an atomic without
@@ -257,6 +268,7 @@ impl StreamingState {
             stats: Arc::new(RwLock::new(None)),
             bandwidth: Arc::new(RwLock::new(None)),
             connection_state: Arc::new(RwLock::new(None)),
+            device_problems: Arc::new(RwLock::new(Vec::new())),
             jitter_buffer_delay_us: Arc::new(AtomicU32::new(0)),
             buffer_size: Mutex::new(64), // Default: 64 samples
             underrun_count: Arc::new(AtomicU64::new(0)),
@@ -617,6 +629,9 @@ pub struct NetworkStats {
     pub packets_sent: u64,
     /// Total packets received
     pub packets_received: u64,
+    /// Whether the audio to this peer is encrypted: "encrypted", "negotiating" while the
+    /// keys are being agreed, or "unencrypted" when the peer's app cannot encrypt
+    pub encryption: String,
     /// Total bytes sent
     pub bytes_sent: u64,
     /// Total bytes received
@@ -674,6 +689,86 @@ pub struct PeerAudioInfo {
     pub channel_count: u32,
 }
 
+/// Which way audio goes through a device
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceSide {
+    Input,
+    Output,
+}
+
+/// Why a device is not in use
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceTrouble {
+    /// The driver did not answer in time (REQ-AUD-123)
+    Unresponsive,
+    /// The device refused to open
+    Failed,
+    /// The device does not open at the session's sample rate, and no rate it
+    /// offers helped. Its format can be changed in the system's sound settings.
+    UnsupportedFormat,
+}
+
+/// A device the audio thread could not open, for the UI to tell the user
+///
+/// Published by the audio thread and read by the IPC layer. Cleared when the
+/// device of that side opens, and when a session starts or ends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceProblem {
+    pub side: DeviceSide,
+    pub trouble: DeviceTrouble,
+    /// The device's name, when the system's list has one for it
+    pub device: Option<String>,
+    /// The sample rate the session asked the device to open at
+    pub sample_rate: u32,
+}
+
+/// Records that the `side` device could not be opened, replacing what was
+/// recorded for that side
+fn note_device_problem(
+    problems: &RwLock<Vec<DeviceProblem>>,
+    side: DeviceSide,
+    device: Option<&DeviceId>,
+    sample_rate: u32,
+    error: &AudioError,
+) {
+    let listed = match side {
+        DeviceSide::Input => crate::audio::input_devices(),
+        DeviceSide::Output => crate::audio::output_devices(),
+    }
+    .unwrap_or_default();
+    let name = device
+        .and_then(|id| listed.iter().find(|d| d.id == id.0))
+        .or_else(|| {
+            listed
+                .iter()
+                .find(|d| d.is_default)
+                .filter(|_| device.is_none())
+        })
+        .map(|d| d.name.clone());
+    let trouble = match error {
+        AudioError::DeviceUnresponsive(_) => DeviceTrouble::Unresponsive,
+        AudioError::UnsupportedConfig(_) => DeviceTrouble::UnsupportedFormat,
+        _ => DeviceTrouble::Failed,
+    };
+    if let Ok(mut problems) = problems.write() {
+        problems.retain(|p| p.side != side);
+        problems.push(DeviceProblem {
+            side,
+            trouble,
+            device: name,
+            sample_rate,
+        });
+    }
+}
+
+fn clear_device_problem(problems: &RwLock<Vec<DeviceProblem>>, side: DeviceSide) {
+    if let Ok(mut problems) = problems.write() {
+        problems.retain(|p| p.side != side);
+    }
+}
+
 /// Streaming status for IPC
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamingStatus {
@@ -702,6 +797,9 @@ pub struct StreamingStatus {
     pub connection_state: Option<String>,
     /// Why the connection failed, when `connection_state` is "failed"
     pub connection_error: Option<String>,
+    /// Devices that could not be opened. Read whether or not a session is
+    /// active: one that could not open its device never became active.
+    pub device_problems: Vec<DeviceProblem>,
 }
 
 /// Binds the audio socket and reports the address peers should send to.
@@ -795,6 +893,7 @@ pub async fn streaming_start(
     let shared_bandwidth = state.bandwidth.clone();
     let shared_jitter_delay_us = state.jitter_buffer_delay_us.clone();
     let shared_connection_state = state.connection_state.clone();
+    let shared_device_problems = state.device_problems.clone();
     let underrun_count = state.underrun_count.clone();
     let delay_adjustments = state.delay_adjustments.clone();
     let reconnect_count = state.reconnect_count.clone();
@@ -836,6 +935,9 @@ pub async fn streaming_start(
     // Clear peer latency info
     if let Ok(mut info) = state.peer_latency_info.write() {
         *info = None;
+    }
+    if let Ok(mut problems) = state.device_problems.write() {
+        problems.clear();
     }
 
     // Read the settings and become active as one step, with changes held
@@ -925,6 +1027,7 @@ pub async fn streaming_start(
                 &shared_bandwidth,
                 &shared_jitter_delay_us,
                 &shared_connection_state,
+                &shared_device_problems,
                 &underrun_count,
                 &delay_adjustments,
                 &reconnect_count,
@@ -958,6 +1061,9 @@ pub async fn streaming_start(
 
 /// Stop audio streaming
 pub async fn streaming_stop(state: tauri::State<'_, StreamingState>) -> Result<(), String> {
+    if let Ok(mut problems) = state.device_problems.write() {
+        problems.clear();
+    }
     if !state.is_active.load(Ordering::SeqCst) {
         return Ok(()); // Already stopped
     }
@@ -1032,6 +1138,7 @@ pub async fn streaming_status(
             uptime_seconds: s.uptime_seconds,
             packets_sent: s.packets_sent,
             packets_received: s.packets_received,
+            encryption: s.security.as_str().to_string(),
             bytes_sent: s.bytes_sent,
             bytes_received: s.bytes_received,
         };
@@ -1131,6 +1238,11 @@ pub async fn streaming_status(
         peer_audio,
         connection_state: connection_state.as_ref().map(|(state, _)| state.clone()),
         connection_error: connection_state.and_then(|(_, error)| error),
+        device_problems: state
+            .device_problems
+            .read()
+            .map(|problems| problems.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -1240,6 +1352,7 @@ pub async fn streaming_get_master_volume(
 /// contended buffer costs one concealed frame rather than a stalled device.
 /// The mixer gains are applied here rather than on the way in, so a volume or
 /// pan change is heard on the very next frame.
+#[allow(clippy::too_many_arguments)]
 fn playout_source(
     receive: ReceivePath,
     peer_volume: Arc<AtomicU32>,
@@ -1248,8 +1361,15 @@ fn playout_source(
     output_level: Arc<AtomicU32>,
     underrun_count: Arc<AtomicU64>,
     monitor: LocalMonitor,
+    recording: Option<(RecordingTap, RecordingTap)>,
 ) -> impl FnMut(&mut [f32]) -> usize + Send + 'static {
+    let mut recording = recording;
+    let mut peer_gain = GainRamp::new(receive.sample_rate());
     move |out: &mut [f32]| {
+        let (b_tap, c_tap) = match recording.as_mut() {
+            Some((b, c)) => (Some(b), Some(c)),
+            None => (None, None),
+        };
         let samples = mix_peers(
             &receive,
             &peer_volume,
@@ -1257,11 +1377,17 @@ fn playout_source(
             &peer_pan,
             &output_level,
             &underrun_count,
+            &mut peer_gain,
             out,
+            b_tap,
         );
         // Added after the peers, whatever they did this frame: hearing yourself
         // must not wait for, or depend on, anyone being connected (ADR-033).
         monitor.mix_into(&mut out[..samples]);
+        // C is what is actually heard: post-fader, self included.
+        if let Some(tap) = c_tap {
+            tap.push_stereo(&out[..samples]);
+        }
         #[cfg(feature = "debug-tools")]
         {
             use crate::audio_tap::{inject, observe, Point};
@@ -1276,18 +1402,21 @@ fn playout_source(
 /// user selected (1-based). `make_source` builds the frame source, once per
 /// attempt.
 ///
-/// A device that has no such channels is played on its first two, so a stale
-/// setting never leaves a session without sound.
+/// A device that has no such channels is played on its first ones
+/// (`pair_in_use`), so a stale setting never leaves a session without sound.
+/// The saved pair is not touched.
 fn start_playout<S>(
     engine: &mut AudioEngine,
     device_id: Option<&DeviceId>,
-    (left, right): (u32, Option<u32>),
+    saved: (u32, Option<u32>),
     frame_samples: usize,
     make_source: impl Fn() -> S,
 ) -> Result<(), AudioError>
 where
     S: FnMut(&mut [f32]) -> usize + Send + 'static,
 {
+    let chosen = device_id.map(|id| id.0.clone());
+    let (left, right) = pair_in_use(&Devices::list().output, &chosen, saved);
     let selected = OutputRoute::from_settings(left, right);
     engine.set_playback_route(selected);
     match engine.start_playback_with_source(device_id, frame_samples, make_source()) {
@@ -1307,6 +1436,11 @@ where
 
 /// Fills `out` from the play-out buffer with the mixer gains applied, and
 /// returns how many samples it wrote.
+///
+/// `dry_tap`, when given, gets the peer's stereo frame exactly as decoded:
+/// before `pan_received` applies the listener's fader and pan (recording/
+/// streaming output `B`, rm:1068).
+#[allow(clippy::too_many_arguments)]
 fn mix_peers(
     receive: &ReceivePath,
     peer_volume: &AtomicU32,
@@ -1314,7 +1448,9 @@ fn mix_peers(
     peer_pan: &std::sync::atomic::AtomicI32,
     output_level: &AtomicU32,
     underrun_count: &AtomicU64,
+    peer_gain: &mut GainRamp,
     out: &mut [f32],
+    dry_tap: Option<&mut RecordingTap>,
 ) -> usize {
     let read = receive.read_into(out);
 
@@ -1333,27 +1469,19 @@ fn mix_peers(
         PlayoutResult::Played { .. } | PlayoutResult::Concealed { .. } => {}
     }
 
+    if let Some(tap) = dry_tap {
+        tap.push_stereo(&out[..read.samples]);
+    }
+
     let combined_vol = (peer_volume.load(Ordering::Relaxed) as f32 / 100.0)
         * (master_volume.load(Ordering::Relaxed) as f32 / 100.0);
 
-    // Constant-power pan on top of whatever the sender already applied.
     let pan = peer_pan.load(Ordering::Relaxed);
-    let angle = ((pan + 100) as f32 / 200.0) * std::f32::consts::FRAC_PI_2;
-    let (left_gain, right_gain) = (angle.cos(), angle.sin());
-
     let samples = &mut out[..read.samples];
-    for frame in samples.chunks_mut(WIRE_CHANNELS) {
-        if frame.len() < WIRE_CHANNELS {
-            for slot in frame.iter_mut() {
-                *slot *= combined_vol;
-            }
-            continue;
-        }
-        let left = frame[0] * combined_vol;
-        let right = frame[1] * combined_vol;
-        frame[0] = left * left_gain + right * (1.0 - right_gain);
-        frame[1] = right * right_gain + left * (1.0 - left_gain);
-    }
+    pan_received(samples, receive.peer_channels(), 1.0, pan);
+    // The fader and mute move to their new gain over a few milliseconds, so
+    // muting a participant does not click.
+    peer_gain.apply(samples, WIRE_CHANNELS, combined_vol);
 
     output_level.store(rms_level(samples), Ordering::Relaxed);
     read.samples
@@ -1366,59 +1494,114 @@ struct CaptureRing {
     channels: usize,
 }
 
+impl CaptureRing {
+    /// A ring nothing is ever written to, for a session whose input did not open
+    fn silent(channels: usize) -> Self {
+        let (_, consumer) = RingBuffer::<f32>::new(1);
+        Self { consumer, channels }
+    }
+}
+
+/// Throws away what is waiting in a capture ring.
+fn discard_queued(consumer: &mut Consumer<f32>) {
+    let queued = consumer.slots();
+    if let Ok(chunk) = consumer.read_chunk(queued) {
+        chunk.commit_all();
+    }
+}
+
+/// Delivers one just-captured, already channel-picked frame: feeds the "hear
+/// yourself" monitor, updates the input level meter, and queues it for the
+/// network send thread. Shared between the two capture backends - `cpal`'s
+/// ring-buffer callback and ASIO's `bufferSwitch` - which hand over samples
+/// the same way (interleaved, already reduced to the picked channels).
+#[allow(clippy::too_many_arguments)]
+fn on_captured_frame(
+    samples: &[f32],
+    channels: usize,
+    producer: &mut rtrb::Producer<f32>,
+    monitor_tap: &mut MonitorTap,
+    level: &AtomicU32,
+    recording_a: Option<&mut RecordingTap>,
+) {
+    monitor_tap.push_interleaved(samples, channels);
+    #[cfg(feature = "debug-tools")]
+    crate::audio_tap::observe(crate::audio_tap::Point::Input, samples, channels);
+    // A is dry: no fader/pan applied, whatever the transmit channel count.
+    if let Some(tap) = recording_a {
+        if channels >= 2 {
+            tap.push_stereo(samples);
+        } else {
+            tap.push_mono(samples);
+        }
+    }
+    // Calculate RMS level (0-100)
+    if !samples.is_empty() {
+        level.store(rms_level(samples), Ordering::SeqCst);
+    }
+    if let Ok(mut chunk) = producer.write_chunk_uninit(samples.len()) {
+        let slices = chunk.as_mut_slices();
+        // Copy samples directly to ring buffer slices
+        let first_len = slices.0.len().min(samples.len());
+        for (i, &sample) in samples[..first_len].iter().enumerate() {
+            slices.0[i].write(sample);
+        }
+        if first_len < samples.len() {
+            for (i, &sample) in samples[first_len..].iter().enumerate() {
+                slices.1[i].write(sample);
+            }
+        }
+        // SAFETY: we just initialized all elements
+        unsafe {
+            chunk.commit_all();
+        }
+    }
+    // If buffer full, samples are dropped (backpressure)
+}
+
 /// Starts capture on `device_id` with `wanted` channels (1 or 2), taken from
 /// the input channels `(left, right)` the user selected (1-based), and returns
 /// the ring the captured audio lands in.
 ///
-/// A device that has no such channels, or will not open with two - a mono
-/// microphone - is opened with the first channels instead, so a stale setting
-/// never leaves a session without input. The ring reports how many channels
-/// it actually has.
+/// A device that has no such channels is opened with its first ones instead
+/// (`pair_in_use`; a mono microphone gets its one channel, which is captured
+/// as mono), and one that will not open with two falls back to its first
+/// channel, so a stale setting never leaves a session without input. The
+/// saved pair is not touched. The ring reports how many channels it actually
+/// has.
+#[allow(clippy::too_many_arguments)]
 fn start_capture_ring(
     engine: &mut AudioEngine,
     device_id: Option<&DeviceId>,
     wanted: u16,
-    (left, right): (u32, Option<u32>),
+    selected: (u32, Option<u32>),
     frame_size: usize,
     input_level: &Arc<AtomicU32>,
     monitor: &LocalMonitor,
-) -> Result<CaptureRing, String> {
-    let mut failure = String::new();
+    recording: Option<&RecordingFeed>,
+) -> Result<CaptureRing, AudioError> {
+    let chosen = device_id.map(|id| id.0.clone());
+    let (left, right) = pair_in_use(&Devices::list().input, &chosen, selected);
+    let mut failure = AudioError::DeviceNotFound("no way to open the input was tried".into());
     for picks in capture_attempts(left, right, wanted) {
         let channels = picks.len() as u16;
         let (mut producer, consumer) = RingBuffer::<f32>::new(32 * frame_size * channels as usize);
         let mut monitor_tap = monitor.tap();
+        let mut recording_a = recording.map(|feed| feed.tap_a());
         let level = input_level.clone();
 
         engine.stop_capture();
         engine.set_capture_picks(picks.clone());
         // Zero-allocation: write directly to the rtrb producer (FnMut, no Sync needed)
         let started = engine.start_capture(device_id, move |samples, _timestamp| {
-            monitor_tap.push_interleaved(samples, channels as usize);
-            #[cfg(feature = "debug-tools")]
-            crate::audio_tap::observe(crate::audio_tap::Point::Input, samples, channels as usize);
-            // Calculate RMS level (0-100)
-            if !samples.is_empty() {
-                level.store(rms_level(samples), Ordering::SeqCst);
-            }
-            if let Ok(mut chunk) = producer.write_chunk_uninit(samples.len()) {
-                let slices = chunk.as_mut_slices();
-                // Copy samples directly to ring buffer slices
-                let first_len = slices.0.len().min(samples.len());
-                for (i, &sample) in samples[..first_len].iter().enumerate() {
-                    slices.0[i].write(sample);
-                }
-                if first_len < samples.len() {
-                    for (i, &sample) in samples[first_len..].iter().enumerate() {
-                        slices.1[i].write(sample);
-                    }
-                }
-                // SAFETY: we just initialized all elements
-                unsafe {
-                    chunk.commit_all();
-                }
-            }
-            // If buffer full, samples are dropped (backpressure)
+            on_captured_frame(
+                samples,
+                channels as usize,
+                &mut producer,
+                &mut monitor_tap,
+                &level,
+                recording_a.as_mut(),
+            );
         });
         match started {
             Ok(()) => {
@@ -1439,11 +1622,38 @@ fn start_capture_ring(
                     picks,
                     e
                 );
-                failure = e.to_string();
+                // Another way of opening a driver that does not answer would
+                // wait for the same silence again
+                let unresponsive = matches!(e, AudioError::DeviceUnresponsive(_));
+                failure = e;
+                if unresponsive {
+                    break;
+                }
             }
         }
     }
     Err(failure)
+}
+
+/// The ring the session sends from: the one the input opened, or, when it
+/// did not open, one that stays empty. What others say is still heard, so the
+/// session goes on without sending, and the screen says why the input is not
+/// in use.
+fn capture_or_silence(
+    opened: Result<CaptureRing, AudioError>,
+    wanted_channels: u16,
+    device_problems: &RwLock<Vec<DeviceProblem>>,
+    device: Option<&DeviceId>,
+    sample_rate: u32,
+) -> CaptureRing {
+    match opened {
+        Ok(ring) => ring,
+        Err(e) => {
+            tracing::warn!("The session goes on without input: {}", e);
+            note_device_problem(device_problems, DeviceSide::Input, device, sample_rate, &e);
+            CaptureRing::silent(wanted_channels as usize)
+        }
+    }
 }
 
 /// Converts a frame of samples to the 0-100 level the meters display.
@@ -1473,6 +1683,104 @@ fn rms_level(samples: &[f32]) -> u32 {
     ((rms * 100.0).min(100.0)).round() as u32
 }
 
+/// The ASIO driver `input` and `output` should open as one session, if they
+/// name the same one: ASIO has one channel set per direction under a single
+/// driver, so an input and output that agree on the driver both mean that
+/// driver, opened once, rather than two independent streams (see
+/// `audio::asio`). `None` when either is unset, they differ, or neither
+/// names an ASIO driver at all.
+#[cfg(target_os = "windows")]
+fn shared_asio_driver(input: Option<&DeviceId>, output: Option<&DeviceId>) -> Option<String> {
+    let (input, output) = (input?, output?);
+    if input != output {
+        return None;
+    }
+    driver_name_of(input).map(str::to_string)
+}
+
+/// Opens `driver_name` for both directions at once: what `start_capture_ring`
+/// and `start_playout` do together, through a single [`AsioDuplex`] session
+/// instead of two `cpal` streams (Windows only, see `audio::asio`).
+///
+/// Picks and route come from the same settings the two-engine path uses
+/// (`pair_in_use`), fit to the driver's reported channels the same way -
+/// `asio::list_drivers` is what the settings screen's channel counts for an
+/// ASIO device come from in the first place, so unlike `start_capture_ring`
+/// this does not retry with narrower channels when they don't fit: a channel
+/// setting that does not fit the driver's own reported channels is a stale
+/// setting to report, not a device that might still open some other way.
+#[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
+fn open_asio(
+    driver_name: &str,
+    input_id: Option<&DeviceId>,
+    output_id: Option<&DeviceId>,
+    sample_rate: u32,
+    frame_size: u32,
+    frame_samples: usize,
+    wanted_channels: u16,
+    input_channels: (u32, Option<u32>),
+    output_channels: (u32, Option<u32>),
+    input_level: Arc<AtomicU32>,
+    monitor: LocalMonitor,
+    receive: ReceivePath,
+    peer_volume: Arc<AtomicU32>,
+    master_volume: Arc<AtomicU32>,
+    peer_pan: Arc<std::sync::atomic::AtomicI32>,
+    output_level: Arc<AtomicU32>,
+    underrun_count: Arc<AtomicU64>,
+    recording: Option<&RecordingFeed>,
+) -> Result<(AsioDuplex, CaptureRing), AudioError> {
+    let chosen_in = input_id.map(|id| id.0.clone());
+    let (in_left, in_right) = pair_in_use(&Devices::list().input, &chosen_in, input_channels);
+    let picks = capture_attempts(in_left, in_right, wanted_channels)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+
+    let chosen_out = output_id.map(|id| id.0.clone());
+    let (out_left, out_right) = pair_in_use(&Devices::list().output, &chosen_out, output_channels);
+    let route = OutputRoute::from_settings(out_left, out_right);
+
+    let channels = picks.len().max(1);
+    let (mut producer, consumer) = RingBuffer::<f32>::new(32 * frame_size as usize * channels);
+    let mut monitor_tap = monitor.tap();
+    let mut recording_a = recording.map(|feed| feed.tap_a());
+    let level = input_level;
+
+    let session = AsioDuplex::start(
+        driver_name,
+        sample_rate,
+        frame_size,
+        frame_samples,
+        OPEN_TIMEOUT,
+        picks,
+        route,
+        move |samples, _timestamp| {
+            on_captured_frame(
+                samples,
+                channels,
+                &mut producer,
+                &mut monitor_tap,
+                &level,
+                recording_a.as_mut(),
+            );
+        },
+        playout_source(
+            receive,
+            peer_volume,
+            master_volume,
+            peer_pan,
+            output_level,
+            underrun_count,
+            monitor,
+            recording.map(|feed| (feed.tap_b(), feed.tap_c())),
+        ),
+    )?;
+
+    Ok((session, CaptureRing { consumer, channels }))
+}
+
 /// Run audio streaming in the audio thread
 #[allow(clippy::too_many_arguments)]
 async fn run_audio_streaming(
@@ -1496,6 +1804,7 @@ async fn run_audio_streaming(
     shared_bandwidth: &RwLock<Option<BandwidthSnapshot>>,
     shared_jitter_delay_us: &AtomicU32,
     shared_connection_state: &Arc<RwLock<ConnectionStateSnapshot>>,
+    device_problems: &RwLock<Vec<DeviceProblem>>,
     underrun_count: &Arc<AtomicU64>,
     delay_adjustments: &AtomicU64,
     reconnect_count: &Arc<AtomicU64>,
@@ -1537,8 +1846,8 @@ async fn run_audio_streaming(
     };
 
     // Create separate audio engines for capture (mono) and playback (stereo)
-    let mut capture_engine = AudioEngine::new(capture_config);
-    let mut playback_engine = AudioEngine::new(playback_config);
+    let mut capture_engine = AudioEngine::new(capture_config.clone());
+    let mut playback_engine = AudioEngine::new(playback_config.clone());
 
     let input_id = input_device_id.map(DeviceId);
     let output_id = output_device_id.map(DeviceId);
@@ -1601,45 +1910,173 @@ async fn run_audio_streaming(
     let monitor = LocalMonitor::new(buffer_size);
     monitor.set_enabled(is_monitoring.load(Ordering::SeqCst));
 
+    // Recording/streaming virtual output (rm:1068): self (A) / peer (B) / mix
+    // (C) as one 6ch device a DAW or OBS can pick as a recording input.
+    // `None` where the platform or environment cannot provide one; the
+    // session runs the same either way.
+    let recording_feed = RecordingFeed::start(sample_rate).map(Arc::new);
+
     // Start audio capture with level metering. Mono or stereo follows the
     // transmit channel setting (REQ-AUD-107/108).
     let mut wanted_channels = transmit_channels.clamp(1, WIRE_CHANNELS as u32) as u16;
-    let capture_ring = start_capture_ring(
-        &mut capture_engine,
-        input_id.as_ref(),
-        wanted_channels,
-        input_channels,
-        buffer_size as usize,
-        &input_level_for_capture,
-        &monitor,
-    )
-    .map_err(|e| format!("Failed to start capture: {}", e))?;
+
+    // The input and output settings name the same ASIO driver (Windows
+    // only): one ASIO session serves both directions instead of the two
+    // engines below (see `audio::asio`, and the CLI's `AudioIo::start`,
+    // which the same check comes from).
+    #[cfg(target_os = "windows")]
+    let asio_driver = shared_asio_driver(input_id.as_ref(), output_id.as_ref());
+    #[cfg(not(target_os = "windows"))]
+    let asio_driver: Option<String> = None;
+    #[cfg(target_os = "windows")]
+    let mut asio_session: Option<AsioDuplex> = None;
+
+    let capture_ring = match &asio_driver {
+        #[cfg(target_os = "windows")]
+        Some(driver_name) => match open_asio(
+            driver_name,
+            input_id.as_ref(),
+            output_id.as_ref(),
+            sample_rate,
+            buffer_size,
+            stereo_frame_size,
+            wanted_channels,
+            input_channels,
+            output_channels,
+            input_level_for_capture.clone(),
+            monitor.clone(),
+            receive.clone(),
+            peer_volume.clone(),
+            master_volume.clone(),
+            peer_pan.clone(),
+            output_level.clone(),
+            underrun_count.clone(),
+            recording_feed.as_deref(),
+        ) {
+            Ok((session, ring)) => {
+                tracing::info!("ASIO session started on {}", driver_name);
+                clear_device_problem(device_problems, DeviceSide::Input);
+                clear_device_problem(device_problems, DeviceSide::Output);
+                asio_session = Some(session);
+                ring
+            }
+            Err(e) => {
+                note_device_problem(
+                    device_problems,
+                    DeviceSide::Input,
+                    input_id.as_ref(),
+                    sample_rate,
+                    &e,
+                );
+                note_device_problem(
+                    device_problems,
+                    DeviceSide::Output,
+                    output_id.as_ref(),
+                    sample_rate,
+                    &e,
+                );
+                return Err(format!("Failed to start the ASIO session: {}", e));
+            }
+        },
+        #[cfg(not(target_os = "windows"))]
+        Some(_) => unreachable!("asio_driver is always None off Windows"),
+        None => {
+            let opened = start_capture_ring(
+                &mut capture_engine,
+                input_id.as_ref(),
+                wanted_channels,
+                input_channels,
+                buffer_size as usize,
+                &input_level_for_capture,
+                &monitor,
+                recording_feed.as_deref(),
+            );
+            let ring = capture_or_silence(
+                opened,
+                wanted_channels,
+                device_problems,
+                input_id.as_ref(),
+                sample_rate,
+            );
+
+            // Start audio playback (stereo). The callback takes frames from
+            // the play-out buffer itself and applies the mixer gains, so a
+            // volume change is heard on the next frame and nothing queues
+            // behind the buffer (ADR-028).
+            if let Err(e) = start_playout(
+                &mut playback_engine,
+                output_id.as_ref(),
+                output_channels,
+                stereo_frame_size,
+                || {
+                    playout_source(
+                        receive.clone(),
+                        peer_volume.clone(),
+                        master_volume.clone(),
+                        peer_pan.clone(),
+                        output_level.clone(),
+                        underrun_count.clone(),
+                        monitor.clone(),
+                        recording_feed
+                            .as_deref()
+                            .map(|feed| (feed.tap_b(), feed.tap_c())),
+                    )
+                },
+            ) {
+                note_device_problem(
+                    device_problems,
+                    DeviceSide::Output,
+                    output_id.as_ref(),
+                    sample_rate,
+                    &e,
+                );
+                return Err(format!("Failed to start playback: {}", e));
+            }
+            tracing::info!("Playback started on {:?}", output_id);
+            ring
+        }
+    };
     let capture_channels = capture_ring.channels;
     let capture_ring = Arc::new(std::sync::Mutex::new(capture_ring));
 
-    // Start audio playback (stereo). The callback takes frames from the
-    // play-out buffer itself and applies the mixer gains, so a volume change
-    // is heard on the next frame and nothing queues behind the buffer
-    // (ADR-028).
-    start_playout(
-        &mut playback_engine,
-        output_id.as_ref(),
-        output_channels,
-        stereo_frame_size,
-        || {
-            playout_source(
-                receive.clone(),
-                peer_volume.clone(),
-                master_volume.clone(),
-                peer_pan.clone(),
-                output_level.clone(),
-                underrun_count.clone(),
-                monitor.clone(),
-            )
-        },
-    )
-    .map_err(|e| format!("Failed to start playback: {}", e))?;
-    tracing::info!("Playback started on {:?}", output_id);
+    let mut capture = DeviceSlot::new("input", capture_config, capture_engine, input_id.clone());
+    let mut playback: DeviceSlot<()> = DeviceSlot::new(
+        "output",
+        playback_config,
+        playback_engine,
+        output_id.clone(),
+    );
+
+    // What the thread that switches the output device runs: the stream is
+    // rebuilt around the same play-out buffer, so the audio already waiting
+    // in it survives the switch.
+    let playout_job = |device: Option<DeviceId>, channels: (u32, Option<u32>)| {
+        let receive = receive.clone();
+        let peer_volume = peer_volume.clone();
+        let master_volume = master_volume.clone();
+        let peer_pan = peer_pan.clone();
+        let output_level = output_level.clone();
+        let underrun_count = underrun_count.clone();
+        let monitor = monitor.clone();
+        let recording_feed = recording_feed.clone();
+        move |engine: &mut AudioEngine| {
+            engine.stop_playback();
+            start_playout(engine, device.as_ref(), channels, stereo_frame_size, || {
+                playout_source(
+                    receive.clone(),
+                    peer_volume.clone(),
+                    master_volume.clone(),
+                    peer_pan.clone(),
+                    output_level.clone(),
+                    underrun_count.clone(),
+                    monitor.clone(),
+                    recording_feed
+                        .as_deref()
+                        .map(|feed| (feed.tap_b(), feed.tap_c())),
+                )
+            })
+        }
+    };
 
     // Rebuild the jitter buffer when the link recovers: sequence numbers carry
     // on from before the outage, so stale packets would play out of order
@@ -1753,6 +2190,18 @@ async fn run_audio_streaming(
         let mut send_buffer = vec![0.0f32; send_buffer_size * WIRE_CHANNELS];
         // Stereo buffer for pan-converted output (2x mono size)
         let mut stereo_send_buffer = vec![0.0f32; send_buffer_size * 2];
+        // Muting fades the microphone out (and unmuting in) rather than cutting
+        // it, so the other side does not hear a click.
+        let mut mute_ramp = GainRamp::new(sample_rate);
+
+        // Capture opens before the connection does, so the ring has been
+        // filling for as long as the connecting took (the room's first member
+        // waits for the second). Sent now, that would be a burst of old audio
+        // ahead of the live frames, and the other side's play-out buffer
+        // overflows on it.
+        if let Ok(mut ring) = capture_ring_for_send.lock() {
+            discard_queued(&mut ring.consumer);
+        }
 
         while send_thread_running_ref.load(Ordering::SeqCst) {
             // Try to read a frame from capture ring buffer. Yields the channel
@@ -1785,8 +2234,13 @@ async fn run_audio_streaming(
             };
 
             if let Some(channels) = channels_read {
-                // Skip sending if muted
-                if !is_muted_send_ref.load(Ordering::SeqCst) {
+                let mute_target = if is_muted_send_ref.load(Ordering::SeqCst) {
+                    0.0
+                } else {
+                    1.0
+                };
+                // Nothing is sent once the fade-out has finished
+                if !mute_ramp.is_silent_at(mute_target) {
                     let volume = local_volume_send_ref.load(Ordering::SeqCst) as f32 / 100.0;
                     let pan = local_pan_send_ref.load(Ordering::SeqCst);
                     capture_to_wire(
@@ -1796,6 +2250,7 @@ async fn run_audio_streaming(
                         pan,
                         &mut stereo_send_buffer,
                     );
+                    mute_ramp.apply(&mut stereo_send_buffer, WIRE_CHANNELS, mute_target);
                     #[cfg(feature = "debug-tools")]
                     {
                         use crate::audio_tap::{inject, observe, Point};
@@ -1834,6 +2289,14 @@ async fn run_audio_streaming(
     let mut last_turn = std::time::Instant::now();
     let stall_after = std::time::Duration::from_micros(2 * receive.frame_us());
 
+    // The ASIO driver currently in use, if any - what the reconciliation
+    // below compares a device or channel change against to decide whether
+    // the path in use (ASIO, or the two engines) needs to change.
+    #[cfg(target_os = "windows")]
+    let mut asio_driver_in_use = asio_driver;
+    #[cfg(target_os = "windows")]
+    let mut asio_switch: AsioSwitch<CaptureRing> = AsioSwitch::idle();
+
     loop {
         let pass_started = jamjam::perf::start();
         let turn_started = std::time::Instant::now();
@@ -1845,9 +2308,15 @@ async fn run_audio_streaming(
         }
         last_turn = turn_started;
 
-        // Set by a command that has capture start over: a new device, or a new
-        // channel count on the current one.
+        // Set by a command that has capture, or playback, start over: a new
+        // device, or a new channel count on the current one. Deferred to
+        // after the match below (rather than switched right away, the way
+        // this loop used to handle playback) so the two can be reconciled
+        // with ASIO together: whichever changes, the pair might now share
+        // (or stop sharing) an ASIO driver, which takes over both directions
+        // at once.
         let mut reopen_capture: Option<Option<DeviceId>> = None;
+        let mut reopen_playback: Option<Option<DeviceId>> = None;
 
         // Check for commands (non-blocking)
         match cmd_rx.try_recv() {
@@ -1862,63 +2331,21 @@ async fn run_audio_streaming(
             Ok(StreamingCommand::SetTransmitChannels(count)) => {
                 println!("Setting transmit channels to: {}", count);
                 wanted_channels = count.clamp(1, WIRE_CHANNELS as u32) as u16;
-                reopen_capture = Some(capture_engine.current_input_device().cloned());
+                reopen_capture = Some(capture.device().cloned());
             }
             Ok(StreamingCommand::SetOutputDevice(device_id)) => {
                 println!("Switching output device to: {:?}", device_id);
-                let new_device_id = device_id.map(DeviceId);
-                // Rebuild the stream around the same play-out buffer: the
-                // audio already waiting in it survives the switch.
-                playback_engine.stop_playback();
-                if let Err(e) = start_playout(
-                    &mut playback_engine,
-                    new_device_id.as_ref(),
-                    output_channels,
-                    stereo_frame_size,
-                    || {
-                        playout_source(
-                            receive.clone(),
-                            peer_volume.clone(),
-                            master_volume.clone(),
-                            peer_pan.clone(),
-                            output_level.clone(),
-                            underrun_count.clone(),
-                            monitor.clone(),
-                        )
-                    },
-                ) {
-                    eprintln!("Failed to switch output device: {}", e);
-                }
+                reopen_playback = Some(device_id.map(DeviceId));
             }
             Ok(StreamingCommand::SetOutputChannels(left, right)) => {
                 println!("Setting output channels to: {} / {:?}", left, right);
                 output_channels = (left, right);
-                let current_device = playback_engine.current_output_device().cloned();
-                playback_engine.stop_playback();
-                if let Err(e) = start_playout(
-                    &mut playback_engine,
-                    current_device.as_ref(),
-                    output_channels,
-                    stereo_frame_size,
-                    || {
-                        playout_source(
-                            receive.clone(),
-                            peer_volume.clone(),
-                            master_volume.clone(),
-                            peer_pan.clone(),
-                            output_level.clone(),
-                            underrun_count.clone(),
-                            monitor.clone(),
-                        )
-                    },
-                ) {
-                    eprintln!("Failed to apply the output channels: {}", e);
-                }
+                reopen_playback = Some(playback.device().cloned());
             }
             Ok(StreamingCommand::SetInputChannels(left, right)) => {
                 println!("Setting input channels to: {} / {:?}", left, right);
                 input_channels = (left, right);
-                reopen_capture = Some(capture_engine.current_input_device().cloned());
+                reopen_capture = Some(capture.device().cloned());
             }
             Ok(StreamingCommand::SetMute(muted)) => {
                 println!("Setting mute state to: {}", muted);
@@ -1974,16 +2401,112 @@ async fn run_audio_streaming(
             }
         }
 
+        // Whether this turn's command could put the pair on, or take it off,
+        // a shared ASIO driver: a device pick on either side, or - while
+        // ASIO is active - a channel setting, since ASIO needs the new picks
+        // and route from the moment it reopens (unlike `start_capture_ring`,
+        // it does not retry with a narrower channel selection afterwards).
+        // Windows only: off Windows there is no ASIO path, and
+        // `reopen_capture`/`reopen_playback` proceed exactly as before.
+        #[cfg(target_os = "windows")]
+        if reopen_capture.is_some() || reopen_playback.is_some() {
+            let wanted_input = reopen_capture
+                .clone()
+                .unwrap_or_else(|| capture.device().cloned());
+            let wanted_output = reopen_playback
+                .clone()
+                .unwrap_or_else(|| playback.device().cloned());
+            let wanted_asio_driver =
+                shared_asio_driver(wanted_input.as_ref(), wanted_output.as_ref());
+
+            if let Some(driver_name) = wanted_asio_driver {
+                capture.park(wanted_input.clone());
+                playback.park(wanted_output.clone());
+                let previous = asio_session.take();
+                let input_level = input_level_for_capture.clone();
+                let monitor = monitor.clone();
+                let receive = receive.clone();
+                let peer_volume = peer_volume.clone();
+                let master_volume = master_volume.clone();
+                let peer_pan = peer_pan.clone();
+                let output_level = output_level.clone();
+                let underrun_count = underrun_count.clone();
+                let recording_feed = recording_feed.clone();
+                let frame_samples = receive.frame_samples();
+                let wanted = wanted_channels;
+                let input_ch = input_channels;
+                let output_ch = output_channels;
+                let open_input = wanted_input.clone();
+                let open_output = wanted_output.clone();
+                let open_driver_name = driver_name.clone();
+                asio_switch.switch(previous, move || {
+                    open_asio(
+                        &open_driver_name,
+                        open_input.as_ref(),
+                        open_output.as_ref(),
+                        sample_rate,
+                        buffer_size,
+                        frame_samples,
+                        wanted,
+                        input_ch,
+                        output_ch,
+                        input_level,
+                        monitor,
+                        receive,
+                        peer_volume,
+                        master_volume,
+                        peer_pan,
+                        output_level,
+                        underrun_count,
+                        recording_feed.as_deref(),
+                    )
+                });
+                asio_driver_in_use = Some(driver_name);
+                reopen_capture = None;
+                reopen_playback = None;
+            } else if asio_driver_in_use.is_some() {
+                // Leaving ASIO: it governed both directions, so both need a
+                // normal open now, even if only one side's command fired
+                // this turn.
+                if let Some(previous) = asio_session.take() {
+                    let _ = thread::Builder::new()
+                        .name("audio-switch-asio".to_string())
+                        .spawn(move || previous.stop());
+                }
+                reopen_capture.get_or_insert(wanted_input);
+                reopen_playback.get_or_insert(wanted_output);
+                asio_driver_in_use = None;
+            }
+        }
+
         if let Some(device_id) = reopen_capture {
-            match start_capture_ring(
-                &mut capture_engine,
-                device_id.as_ref(),
-                wanted_channels,
-                input_channels,
-                buffer_size as usize,
-                &input_level_for_capture,
-                &monitor,
-            ) {
+            let device = device_id.clone();
+            let input_level = input_level_for_capture.clone();
+            let monitor = monitor.clone();
+            let recording_feed = recording_feed.clone();
+            capture.switch(device_id, move |engine| {
+                start_capture_ring(
+                    engine,
+                    device.as_ref(),
+                    wanted_channels,
+                    input_channels,
+                    buffer_size as usize,
+                    &input_level,
+                    &monitor,
+                    recording_feed.as_deref(),
+                )
+            });
+        }
+        if let Some(device_id) = reopen_playback {
+            let device = device_id.clone();
+            playback.switch(device_id, playout_job(device, output_channels));
+        }
+
+        // How the last switch of each device went, if it has finished. Until
+        // it has, the session goes on: a device that does not answer holds
+        // up only its own switch.
+        if let Some(opened) = capture.poll() {
+            match opened {
                 Ok(ring) => {
                     // The peer is told below if the channel count changed
                     local_latency_info.channel_count = ring.channels as u8;
@@ -1991,8 +2514,67 @@ async fn run_audio_streaming(
                     if let Ok(mut guard) = capture_ring.lock() {
                         *guard = ring;
                     }
+                    clear_device_problem(device_problems, DeviceSide::Input);
                 }
-                Err(e) => eprintln!("Failed to restart capture: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to restart capture: {}", e);
+                    note_device_problem(
+                        device_problems,
+                        DeviceSide::Input,
+                        capture.device(),
+                        sample_rate,
+                        &e,
+                    );
+                }
+            }
+        }
+        if let Some(opened) = playback.poll() {
+            match opened {
+                Ok(()) => clear_device_problem(device_problems, DeviceSide::Output),
+                Err(e) => {
+                    eprintln!("Failed to switch output device: {}", e);
+                    note_device_problem(
+                        device_problems,
+                        DeviceSide::Output,
+                        playback.device(),
+                        sample_rate,
+                        &e,
+                    );
+                }
+            }
+        }
+        // How the last switch to an ASIO driver went, if it has finished
+        // (Windows only; see the reconciliation above).
+        #[cfg(target_os = "windows")]
+        if let Some(result) = asio_switch.poll() {
+            match result {
+                Ok((session, ring)) => {
+                    tracing::info!("ASIO session started on {:?}", asio_driver_in_use);
+                    asio_session = Some(session);
+                    local_latency_info.channel_count = ring.channels as u8;
+                    if let Ok(mut guard) = capture_ring.lock() {
+                        *guard = ring;
+                    }
+                    clear_device_problem(device_problems, DeviceSide::Input);
+                    clear_device_problem(device_problems, DeviceSide::Output);
+                }
+                Err(e) => {
+                    eprintln!("Failed to switch the ASIO driver: {}", e);
+                    note_device_problem(
+                        device_problems,
+                        DeviceSide::Input,
+                        capture.device(),
+                        sample_rate,
+                        &e,
+                    );
+                    note_device_problem(
+                        device_problems,
+                        DeviceSide::Output,
+                        playback.device(),
+                        sample_rate,
+                        &e,
+                    );
+                }
             }
         }
 
@@ -2157,6 +2739,7 @@ async fn run_audio_streaming(
                             eprintln!("Failed to create resampler: {}", e)
                         }
                     }
+                    receive.follow_peer_channels(peer_info.channel_count);
                     if let Ok(mut info) = shared_peer_latency_info.write() {
                         *info = Some(peer_info);
                     }
@@ -2185,8 +2768,12 @@ async fn run_audio_streaming(
         conn.disconnect();
     }
 
-    capture_engine.stop_capture();
-    playback_engine.stop_playback();
+    drop(capture);
+    drop(playback);
+    #[cfg(target_os = "windows")]
+    if let Some(session) = asio_session.take() {
+        session.stop();
+    }
 
     println!("Streaming stopped.");
 
@@ -2197,6 +2784,46 @@ async fn run_audio_streaming(
 mod tests {
     use super::*;
     use jamjam::audio::PlayoutConfig;
+
+    /// Verifies: REQ-AUD-126
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_same_asio_driver_on_both_sides_is_the_shared_driver() {
+        let asio = DeviceId("asio:Focusrite USB ASIO".to_string());
+        assert_eq!(
+            shared_asio_driver(Some(&asio), Some(&asio)),
+            Some("Focusrite USB ASIO".to_string())
+        );
+    }
+
+    /// Verifies: REQ-AUD-126
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn two_different_asio_drivers_are_not_a_shared_driver() {
+        let a = DeviceId("asio:Focusrite USB ASIO".to_string());
+        let b = DeviceId("asio:RME Fireface".to_string());
+        assert_eq!(shared_asio_driver(Some(&a), Some(&b)), None);
+    }
+
+    /// Verifies: REQ-AUD-126
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_non_asio_device_on_either_side_is_not_a_shared_driver() {
+        let asio = DeviceId("asio:Focusrite USB ASIO".to_string());
+        let wasapi = DeviceId("wasapi:{some-guid}".to_string());
+        assert_eq!(shared_asio_driver(Some(&asio), Some(&wasapi)), None);
+        assert_eq!(shared_asio_driver(Some(&wasapi), Some(&wasapi)), None);
+    }
+
+    /// Verifies: REQ-AUD-126
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn with_no_device_on_either_side_there_is_no_shared_driver() {
+        let asio = DeviceId("asio:Focusrite USB ASIO".to_string());
+        assert_eq!(shared_asio_driver(None, Some(&asio)), None);
+        assert_eq!(shared_asio_driver(Some(&asio), None), None);
+        assert_eq!(shared_asio_driver(None, None), None);
+    }
 
     /// After audio starts the socket belongs to the audio session, so the
     /// next prepare must bind a new one. Reporting the old address would
@@ -2248,6 +2875,222 @@ mod tests {
         let public: SocketAddr = "203.0.113.7:5000".parse().unwrap();
 
         assert_eq!(merge_candidate_addrs(public, &[]), vec![public]);
+    }
+
+    /// Verifies: REQ-AUD-125
+    #[test]
+    fn when_the_input_does_not_open_at_the_session_rate_the_session_goes_on_and_says_which_rate() {
+        let problems = RwLock::new(Vec::new());
+        let refused = AudioError::UnsupportedConfig("Failed to initialize audio client".into());
+
+        let ring = capture_or_silence(Err(refused), 2, &problems, None, 48000);
+
+        assert_eq!(ring.channels, 2);
+        assert_eq!(
+            ring.consumer.slots(),
+            0,
+            "nothing is sent from a closed input"
+        );
+        let problems = problems.read().unwrap();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].side, DeviceSide::Input);
+        assert_eq!(problems[0].trouble, DeviceTrouble::UnsupportedFormat);
+        assert_eq!(problems[0].sample_rate, 48000);
+    }
+
+    /// Verifies: REQ-AUD-125
+    #[test]
+    fn when_the_input_refuses_for_any_other_reason_the_session_goes_on_too() {
+        let problems = RwLock::new(Vec::new());
+        let refused = AudioError::StreamError("device busy".into());
+
+        let ring = capture_or_silence(Err(refused), 1, &problems, None, 48000);
+
+        assert_eq!(ring.channels, 1);
+        assert_eq!(problems.read().unwrap()[0].trouble, DeviceTrouble::Failed);
+    }
+
+    /// Verifies: REQ-AUD-125
+    #[test]
+    fn when_the_input_opens_nothing_is_reported() {
+        let problems = RwLock::new(Vec::new());
+        let (_, consumer) = RingBuffer::<f32>::new(8);
+
+        let ring = capture_or_silence(
+            Ok(CaptureRing {
+                consumer,
+                channels: 2,
+            }),
+            2,
+            &problems,
+            None,
+            48000,
+        );
+
+        assert_eq!(ring.channels, 2);
+        assert!(problems.read().unwrap().is_empty());
+    }
+
+    /// Verifies: REQ-AUD-035
+    #[test]
+    fn audio_captured_before_the_connection_is_not_sent_once_it_is_up() {
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(8);
+        for sample in [1.0_f32, 2.0, 3.0, 4.0] {
+            producer.push(sample).unwrap();
+        }
+
+        discard_queued(&mut consumer);
+        assert_eq!(consumer.slots(), 0, "the old audio is gone");
+
+        producer.push(5.0).unwrap();
+        assert_eq!(
+            consumer.pop().unwrap(),
+            5.0,
+            "what follows is the live audio"
+        );
+    }
+
+    /// A PCM payload as `ReceivePath::receive` expects it: `f32` samples as
+    /// little-endian bytes (matches `PcmCodec::encode`).
+    fn pcm(samples: &[f32]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    /// `B` (recording/streaming output) must carry what the peer sent, not
+    /// what the listener's fader and pan turned it into: someone recording
+    /// each participant separately wants their dry signal.
+    #[test]
+    fn mix_peers_feeds_its_dry_tap_before_the_fader_and_pan_are_applied() {
+        const FRAME: u32 = 4;
+        let receive = ReceivePath::new(AudioPreset::ZeroLatency.codec_type(), 48_000, FRAME, 0)
+            .expect("a PCM receive path");
+        receive.follow_peer_channels(2);
+        let sent: Vec<f32> = (0..FRAME).flat_map(|_| [0.8_f32, 0.2_f32]).collect();
+        assert!(receive.receive(0, &pcm(&sent)));
+
+        let (mut dry_tap, mut dry_consumer) = jamjam::audio::RecordingTap::for_wiring_tests();
+        let mut out = vec![0.0f32; receive.frame_samples()];
+
+        let samples = mix_peers(
+            &receive,
+            &AtomicU32::new(50),                     // half volume
+            &AtomicU32::new(100),                    // master untouched
+            &std::sync::atomic::AtomicI32::new(100), // hard right pan
+            &AtomicU32::new(0),
+            &AtomicU64::new(0),
+            &mut GainRamp::new(48_000),
+            &mut out,
+            Some(&mut dry_tap),
+        );
+
+        assert_eq!(samples, sent.len());
+        assert_ne!(
+            &out[..samples],
+            &sent[..],
+            "the mixed output has the fader/pan applied"
+        );
+        let chunk = dry_consumer
+            .read_chunk(samples)
+            .expect("the dry tap got a frame");
+        let (first, _) = chunk.as_slices();
+        assert_eq!(
+            first,
+            &sent[..],
+            "the dry tap keeps exactly what the peer sent"
+        );
+    }
+
+    /// Muting a participant must not cut their audio off in one sample: that
+    /// step is the click.
+    /// Verifies: REQ-AUD-034
+    #[test]
+    fn mix_peers_fades_a_muted_participant_out_instead_of_cutting_them() {
+        const FRAME: u32 = 480;
+        let receive = ReceivePath::new(AudioPreset::ZeroLatency.codec_type(), 48_000, FRAME, 0)
+            .expect("a PCM receive path");
+        receive.follow_peer_channels(2);
+        let sent: Vec<f32> = (0..FRAME).flat_map(|_| [0.5_f32, 0.5_f32]).collect();
+        assert!(receive.receive(0, &pcm(&sent)));
+
+        let mut gain = GainRamp::new(48_000);
+        gain.apply(&mut [0.0; 4], WIRE_CHANNELS, 1.0);
+        let mut out = vec![0.0f32; receive.frame_samples()];
+        let samples = mix_peers(
+            &receive,
+            &AtomicU32::new(0), // the participant is muted
+            &AtomicU32::new(100),
+            &std::sync::atomic::AtomicI32::new(0),
+            &AtomicU32::new(0),
+            &AtomicU64::new(0),
+            &mut gain,
+            &mut out,
+            None,
+        );
+
+        assert_eq!(samples, sent.len());
+        let left: Vec<f32> = out[..samples].iter().step_by(2).copied().collect();
+        assert!(
+            left[0] > 0.45,
+            "the first sample is still nearly full level"
+        );
+        assert!(
+            left.windows(2).all(|pair| pair[1] <= pair[0]),
+            "the level only goes down"
+        );
+        assert_eq!(left[FRAME as usize - 1], 0.0, "and it ends silent");
+    }
+
+    /// `C` (recording/streaming output) must carry exactly what is played:
+    /// post-fader, with the local monitor mixed in, same as what a listener
+    /// on the output device hears.
+    #[test]
+    fn playout_source_feeds_its_c_tap_the_same_audio_it_plays() {
+        const FRAME: u32 = 4;
+        let receive = ReceivePath::new(AudioPreset::ZeroLatency.codec_type(), 48_000, FRAME, 0)
+            .expect("a PCM receive path");
+        receive.follow_peer_channels(2);
+        let sent: Vec<f32> = (0..FRAME).flat_map(|_| [0.8_f32, 0.2_f32]).collect();
+        assert!(receive.receive(0, &pcm(&sent)));
+
+        let monitor = LocalMonitor::new(FRAME);
+        let mut monitor_tap = monitor.tap();
+        monitor.set_enabled(true);
+        for _ in 0..3 {
+            monitor_tap.push(&[0.1; FRAME as usize]);
+        }
+
+        let (b_tap, mut b_consumer) = jamjam::audio::RecordingTap::for_wiring_tests();
+        let (c_tap, mut c_consumer) = jamjam::audio::RecordingTap::for_wiring_tests();
+        let mut source = playout_source(
+            receive.clone(),
+            Arc::new(AtomicU32::new(50)),
+            Arc::new(AtomicU32::new(100)),
+            Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(AtomicU64::new(0)),
+            monitor,
+            Some((b_tap, c_tap)),
+        );
+        let mut out = vec![0.0f32; receive.frame_samples() * 3];
+        let samples = source(&mut out);
+        out.truncate(samples);
+
+        let b_chunk = b_consumer.read_chunk(samples).expect("B got a frame");
+        let (b_first, _) = b_chunk.as_slices();
+        assert_eq!(
+            b_first,
+            &sent[..samples],
+            "B stays dry even though C mixes in the monitor"
+        );
+
+        let c_chunk = c_consumer.read_chunk(samples).expect("C got a frame");
+        let (c_first, _) = c_chunk.as_slices();
+        assert_eq!(c_first, &out[..], "C matches exactly what is played");
+        assert_ne!(
+            c_first,
+            &sent[..samples],
+            "C is not dry: the fader and monitor were applied"
+        );
     }
 
     /// Verifies: REQ-AUD-029
@@ -2375,6 +3218,7 @@ mod tests {
             Arc::new(AtomicU32::new(0)),
             Arc::new(AtomicU64::new(0)),
             monitor,
+            None,
         );
         let mut out = vec![0.0f32; receive.frame_samples() * 3];
         let samples = source(&mut out);

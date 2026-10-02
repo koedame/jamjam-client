@@ -1,10 +1,10 @@
 /**
  * Renders the components whose strings used to be written straight into JSX
- * (connection history, reactions, side panel, settings, diagnostics, session
- * stats, device selector, mixer labels) in each UI language.
+ * (reactions, side panel, settings, diagnostics, session stats, device
+ * selector, mixer labels) in each UI language.
  *
  * The bug this guards: with the language set to Japanese, these showed English
- * ("Settings", "Yesterday", "3 days ago", "Balanced", "Name is required", ...)
+ * ("Settings", "Balanced", "Name is required", ...)
  * because they bypassed the locale bundles.
  */
 
@@ -14,8 +14,6 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import i18n from './index';
 import en from '../../locales/en.json';
 import ja from '../../locales/ja.json';
-import { ConnectionPanel } from '../components/ConnectionPanel';
-import { ConnectionHistory } from '../components/ConnectionHistory';
 import { QuickReactions, ReactionButton } from '../components/ChatPanel';
 import { SidePanel } from '../components/SidePanel';
 import { SessionStats } from '../components/SessionStats';
@@ -73,13 +71,6 @@ function latinWords(root: HTMLElement, allowed: string[]): string[] {
     .filter((word) => !kept.has(word));
 }
 
-const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000 - 3_600_000).toISOString();
-
-const history = [
-  { room_code: 'ABC123', label: '', connected_at: daysAgo(1) },
-  { room_code: 'DEF456', label: '', connected_at: daysAgo(3) },
-];
-
 const channels: Channel[] = [
   {
     id: 'peer-1',
@@ -106,6 +97,7 @@ const network: NetworkStats = {
   uptime_seconds: 125,
   packets_sent: 1000,
   packets_received: 998,
+  encryption: 'encrypted',
   bytes_sent: 512_000,
   bytes_received: 511_000,
 };
@@ -144,6 +136,8 @@ const diagnosticsProblems: DiagnosticProblem[] = [
     category: 'audio',
     code: { type: 'OutputEnumerationFailed', data: { error: 'ENODEV' } },
   },
+  { severity: 'Error', category: 'audio', code: { type: 'InputDeviceUnresponsive' } },
+  { severity: 'Error', category: 'audio', code: { type: 'OutputDeviceUnresponsive' } },
   { severity: 'Error', category: 'audio', code: { type: 'NoInputDevices' } },
   { severity: 'Error', category: 'audio', code: { type: 'NoOutputDevices' } },
   { severity: 'Warning', category: 'audio', code: { type: 'InputNot48kHz', data: { device_name: 'Mic' } } },
@@ -245,36 +239,6 @@ describe('components without hard-coded text', () => {
 
   afterAll(async () => {
     await i18n.changeLanguage('en');
-  });
-
-  // Given the connection panel and the history list show recent rooms
-  // When the language is English or Japanese
-  // Then the settings / remove buttons and the dates read in that language
-  //
-  // Verifies: REQ-I18N-105
-  it.each(languages)('shows the connection history in %s', async (language, bundle: Bundle) => {
-    await i18n.changeLanguage(language);
-    const { container } = render(
-      <>
-        <ConnectionPanel
-          connectionHistory={history}
-          onOpenSettings={() => {}}
-          onHistorySelect={() => {}}
-          onHistoryRemove={() => {}}
-          onCreateRoom={() => {}}
-          onJoinRoom={() => {}}
-        />
-        <ConnectionHistory history={history} onSelect={() => {}} onRemove={() => {}} />
-      </>
-    );
-
-    expect(screen.getByLabelText(bundle.settings.title)).toBeInTheDocument();
-    expect(screen.getAllByLabelText(bundle.connectionHistory.remove)).toHaveLength(4);
-    expect(screen.getAllByText(bundle.connectionHistory.yesterday)).toHaveLength(2);
-    expect(screen.getAllByText(fill(bundle.connectionHistory.daysAgo, { days: 3 }))).toHaveLength(2);
-    if (language === 'ja') {
-      expect(latinWords(container, ['ABC', 'DEF', 'TEST', 'jamjam'])).toEqual([]);
-    }
   });
 
   // Given a reaction, the quick reactions and the side panel

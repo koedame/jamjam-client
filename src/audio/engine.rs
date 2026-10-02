@@ -3,16 +3,21 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{Stream, StreamConfig};
+use cpal::StreamConfig;
 use tracing::{debug, error, info, warn};
 
 use super::channels::{pick_channels, place_stereo, smallest_channel_count, OutputRoute};
 use super::device::{
-    display_name, offered_channel_counts, resolve_input_device, resolve_output_device, DeviceId,
+    display_name, input_open_rate, offered_channel_counts, resolve_input_device,
+    resolve_output_device, DeviceId,
 };
+use super::driver::{StreamHost, OPEN_TIMEOUT};
 use super::error::AudioError;
+use super::fault::{self, Call};
+use super::resampler::CaptureResampler;
 
 /// Events that can occur during audio streaming
 #[derive(Debug, Clone)]
@@ -170,8 +175,10 @@ pub type CaptureCallback = Box<dyn FnMut(&[f32], u64) + Send + 'static>;
 /// Audio engine handles capture and playback
 pub struct AudioEngine {
     config: AudioConfig,
-    capture_stream: Option<Stream>,
-    playback_stream: Option<Stream>,
+    capture_stream: Option<StreamHost>,
+    playback_stream: Option<StreamHost>,
+    // How long opening a stream is waited for
+    open_timeout: Duration,
     running: Arc<AtomicBool>,
     // Current device IDs (None = default device)
     current_input_device: Option<DeviceId>,
@@ -193,11 +200,18 @@ impl AudioEngine {
             config,
             capture_stream: None,
             playback_stream: None,
+            open_timeout: OPEN_TIMEOUT,
             running: Arc::new(AtomicBool::new(false)),
             current_input_device: None,
             current_output_device: None,
             event_tx: None,
         }
+    }
+
+    /// Sets how long opening a stream is waited for before the device is
+    /// reported as not responding.
+    pub fn set_open_timeout(&mut self, timeout: Duration) {
+        self.open_timeout = timeout;
     }
 
     /// Set event sender for device change notifications
@@ -241,30 +255,19 @@ impl AudioEngine {
     where
         F: FnMut(&[f32], u64) + Send + 'static,
     {
-        let device = resolve_input_device(device_id)?;
-
-        let device_name = display_name(&device).unwrap_or_default();
-        info!("Starting capture on device: {}", device_name);
+        info!(
+            "Starting capture on device: {}",
+            device_id.map_or("system default", |id| id.0.as_str())
+        );
 
         // Store current device ID
         self.current_input_device = device_id.cloned();
 
         let picks = self.capture_picks.clone();
         let needed = picks.iter().max().map_or(1, |highest| highest + 1);
-        let device_channels =
-            open_channel_count(&device, true, self.config.sample_rate, needed) as usize;
-        let stream_config = StreamConfig {
-            channels: device_channels as u16,
-            sample_rate: self.config.sample_rate,
-            buffer_size: cpal::BufferSize::Fixed(self.config.frame_size),
-        };
-        // A device frame that is already the frame wanted goes through as is
-        let whole_frame = picks.iter().copied().eq(0..device_channels);
-        let mut picked =
-            Vec::with_capacity(self.config.frame_size as usize * picks.len().max(1) * 4);
-
-        let sample_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let sample_count_clone = sample_count.clone();
+        let sample_rate = self.config.sample_rate;
+        let frame_size = self.config.frame_size;
+        let wanted = device_id.cloned();
 
         // Error callback with device disconnection detection
         let event_tx = self.event_tx.clone();
@@ -288,39 +291,85 @@ impl AudioEngine {
             }
         };
 
-        // Callback is moved directly (no Arc) - allows FnMut without Sync requirement
-        let stream = device
-            .build_input_stream(
-                stream_config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let started = crate::perf::start();
-                    if whole_frame {
-                        let timestamp =
-                            sample_count_clone.fetch_add(data.len() as u64, Ordering::Relaxed);
-                        callback(data, timestamp);
-                    } else {
-                        pick_channels(data, device_channels, &picks, &mut picked);
-                        let timestamp =
-                            sample_count_clone.fetch_add(picked.len() as u64, Ordering::Relaxed);
-                        callback(&picked, timestamp);
-                    }
-                    crate::perf::INPUT_CALLBACK.stop(started);
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| AudioError::StreamError(e.to_string()))?;
+        // Opened on a thread of its own: a driver that hangs takes that
+        // thread and not this one (see `driver`).
+        let host = StreamHost::open("input stream", self.open_timeout, move || {
+            fault::point(Call::OpenInput);
+            let device = resolve_input_device(wanted.as_ref())?;
+            debug!(
+                "Capture device: {}",
+                display_name(&device).unwrap_or_default()
+            );
+            // A device that does not open at the session's rate is opened at
+            // the rate it offers, and converted below
+            let device_rate = input_open_rate(&device, sample_rate, needed);
+            let device_channels = open_channel_count(&device, true, device_rate, needed) as usize;
+            let stream_config = StreamConfig {
+                channels: device_channels as u16,
+                sample_rate: device_rate,
+                buffer_size: cpal::BufferSize::Fixed(frame_size),
+            };
+            let mut resampler = if device_rate == sample_rate {
+                None
+            } else {
+                let resampler = CaptureResampler::new(device_rate, sample_rate, picks.len())
+                    .map_err(|e| AudioError::UnsupportedConfig(e.to_string()))?;
+                info!(
+                    "Capture opens at {} Hz and is converted to the session's {} Hz ({} frames of delay)",
+                    device_rate,
+                    sample_rate,
+                    resampler.delay_frames()
+                );
+                Some(resampler)
+            };
+            // A device frame that is already the frame wanted goes through as is
+            let whole_frame = resampler.is_none() && picks.iter().copied().eq(0..device_channels);
+            let mut picked = Vec::with_capacity(frame_size as usize * picks.len().max(1) * 4);
+            let sample_count = std::sync::atomic::AtomicU64::new(0);
 
-        stream
-            .play()
-            .map_err(|e| AudioError::StreamError(e.to_string()))?;
-        self.capture_stream = Some(stream);
+            // Callback is moved directly (no Arc) - allows FnMut without Sync requirement
+            let stream = device
+                .build_input_stream(
+                    stream_config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let started = crate::perf::start();
+                        super::device_loop::on_input(data, device_channels);
+                        if whole_frame {
+                            let timestamp =
+                                sample_count.fetch_add(data.len() as u64, Ordering::Relaxed);
+                            callback(data, timestamp);
+                        } else {
+                            pick_channels(data, device_channels, &picks, &mut picked);
+                            match resampler.as_mut() {
+                                None => {
+                                    let timestamp = sample_count
+                                        .fetch_add(picked.len() as u64, Ordering::Relaxed);
+                                    callback(&picked, timestamp);
+                                }
+                                Some(resampler) => resampler.process(&picked, |converted| {
+                                    let timestamp = sample_count
+                                        .fetch_add(converted.len() as u64, Ordering::Relaxed);
+                                    callback(converted, timestamp);
+                                }),
+                            }
+                        }
+                        crate::perf::INPUT_CALLBACK.stop(started);
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(stream_open_error)?;
+
+            stream
+                .play()
+                .map_err(|e| AudioError::StreamError(e.to_string()))?;
+            debug!("Capture opened with {} device channel(s)", device_channels);
+            Ok(stream)
+        })?;
+        self.capture_stream = Some(host);
         self.running.store(true, Ordering::SeqCst);
 
-        debug!(
-            "Capture started with config: {:?}, opened with {} device channel(s)",
-            self.config, device_channels
-        );
+        debug!("Capture started with config: {:?}", self.config);
         Ok(())
     }
 
@@ -375,49 +424,61 @@ impl AudioEngine {
     where
         F: FnMut(&mut [f32]) -> usize + Send + 'static,
     {
-        let device = resolve_output_device(device_id)?;
-        let device_name = display_name(&device).unwrap_or_default();
-        info!("Starting playback on device: {}", device_name);
+        info!(
+            "Starting playback on device: {}",
+            device_id.map_or("system default", |id| id.0.as_str())
+        );
         self.current_output_device = device_id.cloned();
 
         let route = self.playback_route;
-        let device_channels = open_channel_count(
-            &device,
-            false,
-            self.config.sample_rate,
-            route.channels_needed(),
-        ) as usize;
-        let stream_config = StreamConfig {
-            channels: device_channels as u16,
-            sample_rate: self.config.sample_rate,
-            buffer_size: cpal::BufferSize::Fixed(self.config.frame_size),
-        };
-
-        let mut puller = RoutedPuller {
-            puller: FramePuller::new(frame_samples, fill_frame),
-            stereo: vec![0.0; self.config.frame_size as usize * 2 * 4],
-            device_channels,
-            route,
-        };
-
+        let sample_rate = self.config.sample_rate;
+        let frame_size = self.config.frame_size;
+        let wanted = device_id.cloned();
         let err_fn = self.stream_error_handler();
-        let stream = device
-            .build_output_stream(
-                stream_config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let started = crate::perf::start();
-                    puller.fill(data);
-                    crate::perf::OUTPUT_CALLBACK.stop(started);
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| AudioError::StreamError(e.to_string()))?;
 
-        stream
-            .play()
-            .map_err(|e| AudioError::StreamError(e.to_string()))?;
-        self.playback_stream = Some(stream);
+        // Opened on a thread of its own, like capture
+        let host = StreamHost::open("output stream", self.open_timeout, move || {
+            fault::point(Call::OpenOutput);
+            let device = resolve_output_device(wanted.as_ref())?;
+            debug!(
+                "Playback device: {}",
+                display_name(&device).unwrap_or_default()
+            );
+            let device_channels =
+                open_channel_count(&device, false, sample_rate, route.channels_needed()) as usize;
+            let stream_config = StreamConfig {
+                channels: device_channels as u16,
+                sample_rate,
+                buffer_size: cpal::BufferSize::Fixed(frame_size),
+            };
+
+            let mut puller = RoutedPuller {
+                puller: FramePuller::new(frame_samples, fill_frame),
+                stereo: vec![0.0; frame_size as usize * 2 * 4],
+                device_channels,
+                route,
+                sample_rate,
+            };
+
+            let stream = device
+                .build_output_stream(
+                    stream_config,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let started = crate::perf::start();
+                        puller.fill(data);
+                        crate::perf::OUTPUT_CALLBACK.stop(started);
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(stream_open_error)?;
+
+            stream
+                .play()
+                .map_err(|e| AudioError::StreamError(e.to_string()))?;
+            Ok(stream)
+        })?;
+        self.playback_stream = Some(host);
 
         debug!("Playback started from a frame source: {:?}", self.config);
         Ok(())
@@ -425,13 +486,17 @@ impl AudioEngine {
 
     /// Stop capture
     pub fn stop_capture(&mut self) {
-        self.capture_stream = None;
+        if let Some(host) = self.capture_stream.take() {
+            host.close("input stream");
+        }
         info!("Capture stopped");
     }
 
     /// Stop playback
     pub fn stop_playback(&mut self) {
-        self.playback_stream = None;
+        if let Some(host) = self.playback_stream.take() {
+            host.close("output stream");
+        }
         info!("Playback stopped");
     }
 
@@ -475,6 +540,16 @@ impl AudioEngine {
     }
 }
 
+/// What a device refusing to build a stream means to the caller: a format it
+/// will not open in (`UnsupportedConfig`) is told apart, because the user can
+/// change it, from a stream that failed for any other reason.
+fn stream_open_error(error: cpal::Error) -> AudioError {
+    match error.kind() {
+        cpal::ErrorKind::UnsupportedConfig => AudioError::UnsupportedConfig(error.to_string()),
+        _ => AudioError::StreamError(error.to_string()),
+    }
+}
+
 /// The channel count to open `device` with to reach channel number `needed`:
 /// the smallest one it offers that does. A device that does not say what it
 /// offers is asked for `needed` and left to refuse.
@@ -485,18 +560,44 @@ fn open_channel_count(device: &cpal::Device, input: bool, sample_rate: u32, need
 
 /// Hands the device the stereo a frame source produces, on the channels the
 /// output route names.
-struct RoutedPuller<F> {
+pub(crate) struct RoutedPuller<F> {
     puller: FramePuller<F>,
     /// The stereo for one request, before it is spread over the device's channels.
     stereo: Vec<f32>,
     device_channels: usize,
     route: OutputRoute,
+    sample_rate: u32,
 }
 
 impl<F: FnMut(&mut [f32]) -> usize> RoutedPuller<F> {
-    fn fill(&mut self, data: &mut [f32]) {
+    /// `stereo_len` is the exact size the stereo scratch buffer needs to be
+    /// for a `fill` call of `device_channels`-wide requests, so the caller
+    /// sizes it once and `fill` never has to grow it (see the field doc on
+    /// `stereo`, and `AsioDuplex` in `asio.rs` for such a caller).
+    ///
+    /// Only used by `asio.rs` (Windows only); the `cpal` path below builds
+    /// `RoutedPuller` as a struct literal directly.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn new(
+        puller: FramePuller<F>,
+        stereo_len: usize,
+        device_channels: usize,
+        route: OutputRoute,
+        sample_rate: u32,
+    ) -> Self {
+        Self {
+            puller,
+            stereo: vec![0.0; stereo_len],
+            device_channels,
+            route,
+            sample_rate,
+        }
+    }
+
+    pub(crate) fn fill(&mut self, data: &mut [f32]) {
         if self.device_channels == 2 && self.route.is_default() {
             self.puller.fill(data);
+            super::device_loop::on_output(data, self.sample_rate);
             return;
         }
         let stereo_len = data.len() / self.device_channels * 2;
@@ -505,6 +606,7 @@ impl<F: FnMut(&mut [f32]) -> usize> RoutedPuller<F> {
         }
         let stereo = &mut self.stereo[..stereo_len];
         self.puller.fill(stereo);
+        super::device_loop::on_output(stereo, self.sample_rate);
         place_stereo(stereo, data, self.device_channels, self.route);
     }
 }
@@ -513,7 +615,7 @@ impl<F: FnMut(&mut [f32]) -> usize> RoutedPuller<F> {
 ///
 /// The source is asked for a frame only when the device has used up the last
 /// one, so nothing is fetched ahead of the clock.
-struct FramePuller<F> {
+pub(crate) struct FramePuller<F> {
     fill_frame: F,
     frame: Vec<f32>,
     filled: usize,
@@ -521,7 +623,7 @@ struct FramePuller<F> {
 }
 
 impl<F: FnMut(&mut [f32]) -> usize> FramePuller<F> {
-    fn new(frame_samples: usize, fill_frame: F) -> Self {
+    pub(crate) fn new(frame_samples: usize, fill_frame: F) -> Self {
         // Frames vary in length once a peer at another sample rate is
         // resampled, so the buffer is sized for the widest conversion and the
         // source reports how much of it it filled.
@@ -578,6 +680,47 @@ mod tests {
         let config = AudioConfig::default();
         let engine = AudioEngine::new(config.clone());
         assert_eq!(engine.config().sample_rate, config.sample_rate);
+    }
+
+    /// The engine is handed between threads (the session thread and the
+    /// threads that open a device off it), so it must stay `Send`. Checked
+    /// when this compiles; there is nothing to assert at run time.
+    #[test]
+    fn the_engine_can_be_sent_to_another_thread() {
+        fn is_send<T: Send>() {}
+        is_send::<AudioEngine>();
+    }
+
+    /// Verifies: REQ-AUD-123
+    #[test]
+    fn opening_capture_on_a_driver_that_hangs_gives_up_at_the_limit_and_says_so() {
+        let mut engine = AudioEngine::new(AudioConfig::default());
+        engine.set_open_timeout(Duration::from_millis(100));
+        fault::stall(Call::OpenInput, Duration::from_secs(3));
+        let started = std::time::Instant::now();
+
+        let result = engine.start_capture(None, |_, _| {});
+
+        fault::stall(Call::OpenInput, Duration::ZERO);
+        assert!(matches!(result, Err(AudioError::DeviceUnresponsive(_))));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!engine.is_capture_running());
+    }
+
+    /// Verifies: REQ-AUD-123
+    #[test]
+    fn opening_playback_on_a_driver_that_hangs_gives_up_at_the_limit_and_says_so() {
+        let mut engine = AudioEngine::new(AudioConfig::default());
+        engine.set_open_timeout(Duration::from_millis(100));
+        fault::stall(Call::OpenOutput, Duration::from_secs(3));
+        let started = std::time::Instant::now();
+
+        let result = engine.start_playback_with_source(None, 64, |_| 0);
+
+        fault::stall(Call::OpenOutput, Duration::ZERO);
+        assert!(matches!(result, Err(AudioError::DeviceUnresponsive(_))));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!engine.is_playback_running());
     }
 
     /// A source that writes `frame_len` samples per call, counting up from 0,
@@ -678,6 +821,7 @@ mod tests {
             stereo: Vec::new(),
             device_channels: 8,
             route: OutputRoute::from_settings(5, Some(6)),
+            sample_rate: 48_000,
         };
         let mut data = vec![f32::NAN; 16];
 

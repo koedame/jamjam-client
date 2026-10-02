@@ -1,8 +1,3 @@
----
-sidebar_label: "ADR-047: Git-Flow Branching"
-sidebar_position: 47
----
-
 # ADR-047: 開発は develop で進め、main には出した正式版だけを置く（Git-Flow）
 
 ## Status
@@ -33,6 +28,8 @@ Git-Flow に近い形にする。
 - **タグは対になるサーバー側のリポジトリと同じ名前を同じときに打つ**（ベータ版も正式版も）。片方に変更が無くても両方に打ち、
   変更の無い側は 1 つのコミットに複数のタグが付いてよい。版ごとに、どのコミットどうしが前提だったかを
   タグから読めるようにするため
+
+Dependabot の PR も develop へ向ける（`.github/dependabot.yml` の `target-branch`）。
 
 CI（`ci.yml` `build.yml` `e2e-pr.yml`）は main と develop への push と、それぞれへの PR で回る。
 ドキュメントとストーリーブックの公開は、これまでどおり main への push（＝正式版）で行う。

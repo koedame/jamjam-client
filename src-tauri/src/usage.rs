@@ -6,18 +6,21 @@
 //! here does nothing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
+use jamjam::audio::bounded;
 use jamjam::config::AppConfig;
-use jamjam::network::{NetworkError, SignalingFailure};
+use jamjam::network::{ClientInfo, NetworkError, SignalingFailure};
 use jamjam::telemetry::{
-    snapshot, AppStart, AudioEnv, Component, EndReason, ErrorCode, EventBody, HttpTransport,
+    snapshot, AppStart, AudioEnv, Component, EndReason, ErrorCode, EventBody, Hang, HttpTransport,
     NoTransport, SessionMode, Transport, UsageReporter,
 };
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::streaming::StreamingState;
+use crate::watchdog;
 
 /// How often the open session's link is read for the totals.
 #[cfg(not(test))]
@@ -41,17 +44,51 @@ fn spawn_settling(task: impl std::future::Future<Output = ()> + Send + 'static) 
 }
 #[cfg(test)]
 fn spawn_settling(task: impl std::future::Future<Output = ()> + Send + 'static) {
-    tokio::spawn(task);
+    let handle = tokio::spawn(task);
+    SETTLING.with(|tasks| tasks.borrow_mut().push(handle));
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The tasks `spawn_settling` started on this test's thread, for
+    /// `tests::let_the_changes_settle` to wait for.
+    static SETTLING: std::cell::RefCell<Vec<tokio::task::JoinHandle<()>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How long the audio devices may take to describe. A driver that has hung
+/// never answers, and what is being reported is not worth waiting for.
+#[cfg(not(test))]
+const AUDIO_ENV_TIMEOUT: Duration = jamjam::audio::LIST_TIMEOUT;
+#[cfg(test)]
+const AUDIO_ENV_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// The longest the app waits to send the last events when it is closed.
+#[cfg(not(test))]
 const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// Reads the `audio_env` for the devices with these ids (`None`: the OS
+/// default).
+type ReadAudioEnv = Arc<dyn Fn(Option<&str>, Option<&str>) -> AudioEnv + Send + Sync>;
 
 /// Tauri-managed state: the reporter.
 #[derive(Clone)]
 pub struct UsageState {
     reporter: UsageReporter,
     changes: Arc<Changes>,
+    read_audio_env: ReadAudioEnv,
+    /// A hang found at startup while reporting was off: not yet folded into
+    /// the reporter (that needs consent), waiting for the screen to ask the
+    /// user and answer with `usage_send_previous_hang`.
+    pending_hang: Arc<Mutex<Option<PendingHang>>>,
+}
+
+struct PendingHang {
+    hang: Hang,
+    launch_id: String,
+    app_version: String,
 }
 
 /// What was last reported about the machine's settings and audio devices,
@@ -85,11 +122,97 @@ impl UsageState {
         Self {
             reporter,
             changes: Arc::default(),
+            read_audio_env: Arc::new(snapshot::audio_env),
+            pending_hang: Arc::default(),
         }
+    }
+
+    /// What `watchdog::previous_incident` found at startup, if anything, and
+    /// what an earlier launch found but never got to show
+    /// (`watchdog::read_pending_hang`) - a restart (the app updating itself
+    /// included) is a normal exit, so it does not on its own mean the
+    /// confirmation screen has asked yet. While reporting is already on,
+    /// this is queued at once like a crash and the pending file is cleared;
+    /// if the current version also [`attaches_log`], `jamjam.log` is sent
+    /// the same way `usage_send_previous_hang` does when the user answers
+    /// "send" (ADR-060) - no confirmation is asked, since turning reporting
+    /// on already was one. While it is off, it is kept (in memory and on
+    /// disk, so a further restart before the screen asks still finds it)
+    /// until the screen asks and answers (`usage_previous_hang`,
+    /// `usage_send_previous_hang`).
+    pub fn apply_previous_incident<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        incident: Option<(Hang, String, String)>,
+    ) {
+        let dir = self.reporter.state_dir();
+        let incident = incident.or_else(|| dir.and_then(watchdog::read_pending_hang));
+        let Some((hang, launch_id, app_version)) = incident else {
+            return;
+        };
+        if self.reporter.is_enabled() {
+            self.reporter
+                .record_previous_hang(hang, &launch_id, &app_version);
+            if let Some(dir) = dir {
+                watchdog::clear_pending_hang(dir);
+            }
+            if attaches_log(app) {
+                let app = app.clone();
+                let comment = hang_report_comment(&hang, &launch_id);
+                spawn_settling(async move {
+                    if let Err(err) = crate::report_problem::send_log_report(&app, &comment).await {
+                        tracing::warn!("automatic hang report: could not attach jamjam.log: {err}");
+                    }
+                });
+            }
+        } else {
+            if let Some(dir) = dir {
+                watchdog::save_pending_hang(dir, hang, &launch_id, &app_version);
+            }
+            *self.pending_hang.lock().unwrap() = Some(PendingHang {
+                hang,
+                launch_id,
+                app_version,
+            });
+        }
+    }
+
+    /// The one pending hang report, if there is one, removed either way it
+    /// is about to be used next (sent or discarded): clears the disk copy
+    /// `apply_previous_incident` may have saved alongside it, so neither is
+    /// found again by a launch after this one.
+    fn take_pending_hang(&self) -> Option<PendingHang> {
+        let pending = self.pending_hang.lock().unwrap().take();
+        if pending.is_some() {
+            if let Some(dir) = self.reporter.state_dir() {
+                watchdog::clear_pending_hang(dir);
+            }
+        }
+        pending
     }
 
     pub fn reporter(&self) -> &UsageReporter {
         &self.reporter
+    }
+
+    /// What this app tells the server about itself when it enters a room
+    /// ([`ClientInfo`]), whether or not usage reporting is on. Read fresh, so
+    /// it shows the settings and devices of this moment. A driver that does not
+    /// answer in time leaves the devices out; the rest is still sent.
+    pub async fn client_info(&self, config: &AppConfig) -> ClientInfo {
+        let audio = audio_env_within(
+            self.read_audio_env.clone(),
+            config.input_device_id.clone(),
+            config.output_device_id.clone(),
+        )
+        .await
+        .unwrap_or(AudioEnv {
+            input: None,
+            output: None,
+            input_id: config.input_device_id.clone(),
+            output_id: config.output_device_id.clone(),
+        });
+        ClientInfo::new(self.reporter.app_version(), app_start_of(config), audio)
     }
 
     /// Reports this launch: the crash of the last one if there was one, then
@@ -97,14 +220,22 @@ impl UsageState {
     pub fn report_launch(&self, config: AppConfig) {
         let reporter = self.reporter.clone();
         let changes = self.changes.clone();
+        let read_audio_env = self.read_audio_env.clone();
         tauri::async_runtime::spawn(async move {
             reporter.report_previous_crash();
             let app_start = app_start_of(&config);
-            let audio_env = audio_env_of(&config);
             *changes.reported_app_start.lock().unwrap() = Some(app_start.clone());
-            *changes.reported_audio_env.lock().unwrap() = Some(audio_env.clone());
             reporter.record(EventBody::AppStart(app_start));
-            reporter.record(EventBody::AudioEnv(audio_env));
+            let audio_env = audio_env_within(
+                read_audio_env,
+                config.input_device_id.clone(),
+                config.output_device_id.clone(),
+            )
+            .await;
+            if let Some(audio_env) = audio_env {
+                *changes.reported_audio_env.lock().unwrap() = Some(audio_env.clone());
+                reporter.record(EventBody::AudioEnv(audio_env));
+            }
             reporter.flush().await;
         });
     }
@@ -149,12 +280,16 @@ impl UsageState {
         }
         let seen = self.changes.devices_seen.fetch_add(1, Ordering::SeqCst) + 1;
         let (reporter, changes) = (self.reporter.clone(), self.changes.clone());
+        let read_audio_env = self.read_audio_env.clone();
         spawn_settling(async move {
             tokio::time::sleep(CHANGE_SETTLE).await;
             if changes.devices_seen.load(Ordering::SeqCst) != seen {
                 return;
             }
-            let audio_env = snapshot::audio_env(input_id.as_deref(), output_id.as_deref());
+            let Some(audio_env) = audio_env_within(read_audio_env, input_id, output_id).await
+            else {
+                return;
+            };
             {
                 let mut reported = changes.reported_audio_env.lock().unwrap();
                 if reported.as_ref() == Some(&audio_env) {
@@ -233,9 +368,24 @@ impl UsageState {
             self.reporter.end_session(EndReason::AppQuit);
         }
         let reporter = self.reporter.clone();
-        tauri::async_runtime::block_on(async move {
-            let _ = tokio::time::timeout(EXIT_FLUSH_TIMEOUT, reporter.flush()).await;
+        let (done, waiting) = mpsc::channel();
+        // `flush` can get stuck in a call that never yields back to the
+        // executor (seen hanging in network setup on macOS, never on
+        // Windows). A `tokio::time::timeout` around it, run with `block_on`
+        // on this thread, cannot bound that: both the timeout and the flush
+        // are polled by the same call, so a flush that never returns from a
+        // single poll never lets the timeout be checked either. Running it
+        // on a thread of its own instead - the same fix `restart` already
+        // applies to a main thread stuck elsewhere (ADR-055) - means only
+        // that thread is left stuck; this one moves on once the OS-timed
+        // wait below elapses regardless.
+        thread::spawn(move || {
+            tauri::async_runtime::block_on(async move {
+                let _ = tokio::time::timeout(EXIT_FLUSH_TIMEOUT, reporter.flush()).await;
+            });
+            let _ = done.send(());
         });
+        let _ = waiting.recv_timeout(EXIT_FLUSH_TIMEOUT + Duration::from_millis(500));
     }
 }
 
@@ -248,18 +398,108 @@ fn app_start_of(config: &AppConfig) -> AppStart {
     app_start
 }
 
-/// The `audio_env` for the devices `config` selects.
-fn audio_env_of(config: &AppConfig) -> AudioEnv {
-    snapshot::audio_env(
-        config.input_device_id.as_deref(),
-        config.output_device_id.as_deref(),
-    )
+/// The `audio_env` for the devices with these ids, or `None` when the drivers
+/// do not answer in time. Asking a driver that hung never returns, so it is
+/// asked on a thread of its own: no task of the runtime waits for it, and
+/// what is not known is not reported.
+async fn audio_env_within(
+    read: ReadAudioEnv,
+    input_id: Option<String>,
+    output_id: Option<String>,
+) -> Option<AudioEnv> {
+    tauri::async_runtime::spawn_blocking(move || {
+        bounded("reading the audio devices", AUDIO_ENV_TIMEOUT, move || {
+            read(input_id.as_deref(), output_id.as_deref())
+        })
+    })
+    .await
+    .ok()?
+    .ok()
 }
 
 /// The NDJSON the next send will contain, for the "what is sent" view.
 #[tauri::command]
 pub fn usage_preview(state: tauri::State<'_, UsageState>) -> String {
     state.reporter.preview_ndjson()
+}
+
+/// A hang found at startup while usage reporting is off, if there is one
+/// still waiting for the user to say whether to send it. `None` once it has
+/// been answered (`usage_send_previous_hang`) or if reporting is already on
+/// (it went out with the rest, unasked, the way a crash does).
+#[tauri::command]
+pub fn usage_previous_hang(state: tauri::State<'_, UsageState>) -> Option<Hang> {
+    state.pending_hang.lock().unwrap().as_ref().map(|p| p.hang)
+}
+
+/// Whether answering "send" to [`usage_previous_hang`] also attaches
+/// `jamjam.log` ([`attaches_log`]), so the confirmation screen can say so
+/// accurately (ADR-059).
+#[tauri::command]
+pub fn usage_previous_hang_attaches_log(app: AppHandle) -> bool {
+    attaches_log(&app)
+}
+
+/// Before 1.0.0, only verification users run the app, so both the confirmed
+/// hang report (ADR-059) and the automatic one sent while reporting is
+/// already on (ADR-060) also attach `jamjam.log` through the "Report a
+/// problem" send path. Revisit this at the 1.0.0 release: decide there
+/// whether `jamjam.log` still goes out unasked, and adjust this together
+/// with what the confirmation screen says it will send.
+fn major_attaches_log(major: u64) -> bool {
+    major < 1
+}
+
+fn attaches_log<R: Runtime>(app: &AppHandle<R>) -> bool {
+    major_attaches_log(app.package_info().version.major)
+}
+
+/// The comment sent with the `jamjam.log` [`attaches_log`] attaches to a
+/// hang report - confirmed or automatic - naming the stage and launch it is
+/// about so a report read on the server side does not need to be matched up
+/// with the structured `hang` event by anything but this text (the same
+/// `launch_id` is on both).
+fn hang_report_comment(hang: &Hang, launch_id: &str) -> String {
+    format!(
+        "(automatic report: did not exit cleanly last time, stuck while {:?}; launch {launch_id})",
+        hang.stage
+    )
+}
+
+/// Answers the one pending hang report: `send` true sends it on its own,
+/// without turning `usage_reporting` on; `send` false discards it. Either
+/// way, `usage_previous_hang` returns `None` afterwards.
+///
+/// While `send` is true and [`attaches_log`] holds, this also sends
+/// `jamjam.log` through the same path "Report a problem" uses
+/// (`report_problem::send_log_report`), so the two features share one
+/// receiver and one body shape instead of a second one being built here
+/// (ADR-059). That send is best-effort: a failure is logged and does not
+/// change the `Ok(())` this returns, matching `send_one_off_hang` itself
+/// not surfacing a delivery failure either.
+#[tauri::command]
+pub async fn usage_send_previous_hang(
+    app: AppHandle,
+    state: tauri::State<'_, UsageState>,
+    send: bool,
+) -> Result<(), String> {
+    let Some(pending) = state.take_pending_hang() else {
+        return Ok(());
+    };
+    if send {
+        state
+            .reporter()
+            .clone()
+            .send_one_off_hang(pending.hang, &pending.launch_id, &pending.app_version)
+            .await;
+        if attaches_log(&app) {
+            let comment = hang_report_comment(&pending.hang, &pending.launch_id);
+            if let Err(err) = crate::report_problem::send_log_report(&app, &comment).await {
+                tracing::warn!("automatic hang report: could not attach jamjam.log: {err}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reads the streaming totals into the open session: underruns and
@@ -331,6 +571,7 @@ pub fn signaling_connect_failure_code(error: &NetworkError) -> ErrorCode {
             SignalingFailure::Dns => ErrorCode::Dns,
             SignalingFailure::Other => ErrorCode::ConnectFailed,
         },
+        NetworkError::ClockSkew { .. } => ErrorCode::Http4xx,
         _ => ErrorCode::ConnectFailed,
     }
 }
@@ -393,6 +634,7 @@ fn classify_streaming_error(message: &str) -> Option<(Component, ErrorCode)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jamjam::telemetry::HangStage;
 
     /// The whole path a room takes through the app: the session opens, the
     /// sampler reads the link on its own timer, a peer joins, and leaving
@@ -464,8 +706,9 @@ mod tests {
             .unwrap();
         ours.connect(theirs.local_addr()).await.unwrap();
         theirs.connect(ours.local_addr()).await.unwrap();
-        theirs.send_audio(&[0.0f32; 64], 0).await.unwrap();
-        for _ in 0..50 {
+        // Audio goes once the two have agreed keys, so keep sending until one arrives.
+        for _ in 0..1000 {
+            theirs.send_audio(&[0.0f32; 64], 0).await.unwrap();
             if ours.link_facts().snapshot().first_audio_ms.is_some() {
                 break;
             }
@@ -541,6 +784,47 @@ mod tests {
         assert_eq!(reporter.preview_ndjson(), "");
     }
 
+    /// A transport whose `send` blocks the thread polling it directly,
+    /// without ever reaching an `.await` point - the way a synchronous
+    /// system call inside a real HTTP client's setup can (seen hanging in
+    /// network setup on macOS, never on Windows). A `tokio::time::timeout`
+    /// placed around a future built this way cannot interrupt it, since the
+    /// timeout and the send are driven by the same `poll` call.
+    struct HangingTransport;
+
+    impl Transport for HangingTransport {
+        fn send(&self, _body: Vec<u8>) -> jamjam::telemetry::Delivery<'_> {
+            Box::pin(async {
+                std::thread::sleep(Duration::from_secs(3600));
+                true
+            })
+        }
+    }
+
+    /// Verifies: REQ-UPD-018
+    #[test]
+    fn when_the_flush_never_yields_app_exiting_still_returns_within_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let reporter = UsageReporter::new(
+            Some(dir.path().to_path_buf()),
+            "test",
+            Arc::new(HangingTransport),
+            true,
+        );
+        reporter.begin_session(SessionMode::Join);
+        let usage = UsageState::with_reporter(reporter);
+        let streaming = StreamingState::new();
+
+        let started = std::time::Instant::now();
+        usage.app_exiting(&streaming);
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "app_exiting took {elapsed:?} instead of returning within the timeout"
+        );
+    }
+
     /// A mock app with usage reporting `enabled`, and the launch's settings
     /// and devices already reported, as they are once the app has started.
     fn launched(enabled: bool) -> (tauri::App<tauri::test::MockRuntime>, UsageReporter) {
@@ -564,6 +848,56 @@ mod tests {
         });
         app.manage(usage);
         (app, reporter)
+    }
+
+    /// Waits until every change reported so far has been dealt with: settled,
+    /// its devices read (or given up on) and recorded. The reads run on
+    /// threads of their own, in real time, which a paused clock does not
+    /// wait for; waiting for the tasks that started them does not depend on
+    /// how long the machine takes.
+    async fn let_the_changes_settle() {
+        let tasks = SETTLING.with(|tasks| std::mem::take(&mut *tasks.borrow_mut()));
+        for task in tasks {
+            task.await.unwrap();
+        }
+    }
+
+    /// A reader of the devices that never comes back until the returned
+    /// sender is dropped, as a hung driver does not.
+    fn hung_reader() -> (ReadAudioEnv, std::sync::mpsc::Sender<()>) {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let read: ReadAudioEnv = Arc::new(move |_, _| {
+            let _ = released.lock().unwrap().recv();
+            unnamed_devices(None)
+        });
+        (read, release)
+    }
+
+    fn unnamed_devices(input_id: Option<&str>) -> AudioEnv {
+        AudioEnv {
+            input: None,
+            output: None,
+            input_id: input_id.map(str::to_string),
+            output_id: None,
+        }
+    }
+
+    /// The state of `app`, reading the devices with `read` instead of from the
+    /// machine's drivers: how long a real listing takes is not what these
+    /// tests are about.
+    fn reading_devices_with(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        read: ReadAudioEnv,
+    ) -> UsageState {
+        let mut usage = app.state::<UsageState>().inner().clone();
+        usage.read_audio_env = read;
+        usage
+    }
+
+    /// A reader of the devices that finds none, whatever is chosen.
+    fn devices_answering_at_once() -> ReadAudioEnv {
+        Arc::new(|input_id, _| unnamed_devices(input_id))
     }
 
     fn reported_lines(reporter: &UsageReporter) -> Vec<serde_json::Value> {
@@ -685,12 +1019,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn when_another_device_is_chosen_the_devices_in_use_are_reported() {
         let (app, reporter) = launched(true);
-        let usage = app.state::<UsageState>();
+        let usage = reading_devices_with(&app, devices_answering_at_once());
 
-        // A device the machine does not have reads as none: it differs from
-        // the microphone reported at launch on any machine.
+        // A device that reads as none differs from the microphone reported at
+        // launch.
         usage.devices_selected(Some("no-such-device".to_string()), None);
-        tokio::time::sleep(CHANGE_SETTLE * 4).await;
+        let_the_changes_settle().await;
 
         let lines = reported_lines(&reporter);
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -702,12 +1036,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn when_devices_are_chosen_several_times_in_a_row_they_are_reported_once() {
         let (app, reporter) = launched(true);
-        let usage = app.state::<UsageState>();
+        let usage = reading_devices_with(&app, devices_answering_at_once());
 
         for id in ["no-such-device", "another-missing-device", "a-third-one"] {
             usage.devices_selected(Some(id.to_string()), None);
         }
-        tokio::time::sleep(CHANGE_SETTLE * 4).await;
+        let_the_changes_settle().await;
 
         assert_eq!(reported_lines(&reporter).len(), 1);
     }
@@ -716,14 +1050,70 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn when_the_devices_in_use_are_the_ones_already_reported_nothing_is_reported() {
         let (app, reporter) = launched(true);
-        let usage = app.state::<UsageState>();
-        let now = snapshot::audio_env(Some("no-such-device"), None);
-        *usage.changes.reported_audio_env.lock().unwrap() = Some(now);
+        let usage = reading_devices_with(&app, devices_answering_at_once());
+        *usage.changes.reported_audio_env.lock().unwrap() =
+            Some(unnamed_devices(Some("no-such-device")));
 
         usage.devices_selected(Some("no-such-device".to_string()), None);
-        tokio::time::sleep(CHANGE_SETTLE * 4).await;
+        let_the_changes_settle().await;
 
         assert_eq!(reporter.preview_ndjson(), "");
+    }
+
+    /// Verifies: REQ-AUD-123
+    #[tokio::test(start_paused = true)]
+    async fn when_the_driver_hangs_while_the_devices_are_read_nothing_is_reported() {
+        let (app, reporter) = launched(true);
+        let (read, release) = hung_reader();
+        let usage = reading_devices_with(&app, read);
+
+        usage.devices_selected(Some("no-such-device".to_string()), None);
+        let_the_changes_settle().await;
+
+        assert_eq!(reporter.preview_ndjson(), "");
+        drop(release);
+    }
+
+    /// The point of the limit: a task of the runtime that asks a hung driver
+    /// must not be the one that waits, or the runtime stops with it. With a
+    /// single worker, a ticker that keeps ticking shows nothing was blocked.
+    ///
+    /// Verifies: REQ-AUD-123
+    #[tokio::test(flavor = "current_thread")]
+    async fn when_the_driver_hangs_while_the_devices_are_read_the_runtime_keeps_running() {
+        let (read, release) = hung_reader();
+        let ticks = Arc::new(AtomicU64::new(0));
+        let ticker = {
+            let ticks = ticks.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+
+        let audio_env = audio_env_within(read, None, None).await;
+
+        ticker.abort();
+        drop(release);
+        assert!(audio_env.is_none());
+        assert!(
+            ticks.load(Ordering::SeqCst) >= 10,
+            "the runtime was blocked while the driver hung: {} ticks in {:?}",
+            ticks.load(Ordering::SeqCst),
+            AUDIO_ENV_TIMEOUT
+        );
+    }
+
+    /// Verifies: REQ-AUD-123
+    #[tokio::test]
+    async fn when_the_driver_answers_the_devices_are_read() {
+        let read: ReadAudioEnv = Arc::new(|input_id, _| unnamed_devices(input_id));
+
+        let audio_env = audio_env_within(read, Some("mic".to_string()), None).await;
+
+        assert_eq!(audio_env.unwrap().input_id.as_deref(), Some("mic"));
     }
 
     #[test]
@@ -731,6 +1121,31 @@ mod tests {
         assert_eq!(major_of("128.0.6613.84").as_deref(), Some("128"));
         assert_eq!(major_of("2.44.0").as_deref(), Some("2"));
         assert_eq!(major_of("17").as_deref(), Some("17"));
+    }
+
+    /// Verifies: REQ-TEL-021
+    /// Verifies: REQ-TEL-023
+    #[test]
+    fn a_pre_1_0_0_app_version_attaches_the_log_and_a_1_0_0_or_later_one_does_not() {
+        assert!(major_attaches_log(0));
+        assert!(!major_attaches_log(1));
+        assert!(!major_attaches_log(2));
+    }
+
+    /// Verifies: REQ-TEL-021
+    /// Verifies: REQ-TEL-023
+    #[test]
+    fn the_automatic_hang_reports_comment_names_the_stage_and_launch() {
+        let comment = hang_report_comment(
+            &Hang {
+                stage: HangStage::Restart,
+                stalled_ms: Some(9000),
+            },
+            "launch-42",
+        );
+
+        assert!(comment.contains("Restart"));
+        assert!(comment.contains("launch-42"));
     }
 
     #[test]
@@ -789,6 +1204,10 @@ mod tests {
             signaling_connect_failure_code(&NetworkError::SignalingError("x".into())),
             ErrorCode::ConnectFailed
         );
+        assert_eq!(
+            signaling_connect_failure_code(&NetworkError::ClockSkew { offset_secs: 375 }),
+            ErrorCode::Http4xx
+        );
     }
 
     /// Verifies: REQ-TEL-017
@@ -808,5 +1227,120 @@ mod tests {
     fn when_the_message_is_not_one_the_app_knows_nothing_is_reported() {
         assert_eq!(classify_streaming_error("Invalid address: nonsense"), None);
         assert_eq!(classify_streaming_error(""), None);
+    }
+
+    /// A launch killed with no stage active is found by the very next one,
+    /// but while reporting is off that only lives in `pending_hang` until
+    /// the confirmation screen asks - and an update restarting the app is a
+    /// plain `RunEvent::Exit`, exactly like the clean exit
+    /// `mark_clean_exit` expects, so it must not erase what is still
+    /// waiting to be shown.
+    ///
+    /// Verifies: REQ-TEL-022
+    #[test]
+    fn a_pending_hang_survives_a_clean_restart_before_the_screen_has_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let reporter_for = |app_version: &str| {
+            UsageReporter::new(
+                Some(dir.path().to_path_buf()),
+                app_version,
+                Arc::new(NoTransport) as Arc<dyn Transport>,
+                false,
+            )
+        };
+        // Reporting stays off throughout, so `apply_previous_incident` never
+        // takes the branch that needs a real send; the handle only has to
+        // exist.
+        let app = tauri::test::mock_app();
+
+        // Launch 1 is force-killed with no stage active: `running.json` is
+        // left behind instead of being cleared by `mark_clean_exit`.
+        let killed = reporter_for("0.1.0-36");
+        drop(crate::watchdog::Watchdog::install(killed.clone()));
+
+        // Launch 2 (the relaunch) finds it, and - reporting being off -
+        // only keeps it in memory and on disk, waiting for the screen.
+        let relaunch = reporter_for("0.1.0-36");
+        let found = crate::watchdog::previous_incident(&relaunch);
+        assert!(found.is_some(), "the killed launch's marker was found");
+        let usage2 = UsageState::with_reporter(relaunch.clone());
+        usage2.apply_previous_incident(app.handle(), found);
+        let watchdog2 = crate::watchdog::Watchdog::install(relaunch.clone());
+
+        // The auto-updater restarts launch 2 before its own screen ever
+        // asked about the still-pending incident: an ordinary clean exit.
+        watchdog2.mark_clean_exit();
+        assert!(
+            crate::watchdog::previous_incident(&reporter_for("0.1.0-36")).is_none(),
+            "launch 2 exited cleanly, so it left nothing new of its own"
+        );
+
+        // Launch 3 (the new version the update installed) finds nothing
+        // new either, but must still surface the original incident.
+        let next = reporter_for("0.1.0-37");
+        let found_next = crate::watchdog::previous_incident(&next);
+        assert!(found_next.is_none(), "nothing new happened in launch 2");
+        let usage3 = UsageState::with_reporter(next.clone());
+        usage3.apply_previous_incident(app.handle(), found_next);
+
+        app.manage(usage3);
+        let hang = usage_previous_hang(app.state::<UsageState>())
+            .expect("the incident from launch 1 survived the clean restart");
+        assert_eq!(hang.stage, HangStage::Unknown);
+        assert_eq!(hang.stalled_ms, None);
+
+        // Once the screen finally asks and the user answers - declining
+        // here, `usage_send_previous_hang`'s other branch - it is gone for
+        // good - not found again by a further launch. Taken through the
+        // same `take_pending_hang` the command itself calls; only the
+        // concrete `AppHandle` the command also needs is out of reach of a
+        // mock app, and it is not part of what this regression is about.
+        assert!(app.state::<UsageState>().take_pending_hang().is_some());
+        assert!(usage_previous_hang(app.state::<UsageState>()).is_none());
+        assert!(crate::watchdog::read_pending_hang(dir.path()).is_none());
+    }
+
+    /// A device with usage reporting already on never shows the
+    /// confirmation screen: the incident is queued into the structured
+    /// report at once, like a crash, and nothing is left pending for a
+    /// screen to ask about. This is the branch `report_problem::send_log_report`
+    /// is also attempted from when the current version [`attaches_log`]
+    /// (ADR-060); that part needs the real network/log-file path a mock app
+    /// does not have (same boundary `usage_send_previous_hang`'s own tests
+    /// stop at), so it is checked on a real device instead (see the ticket).
+    ///
+    /// Verifies: REQ-TEL-019
+    #[tokio::test]
+    async fn when_reporting_is_already_on_a_previous_incident_is_recorded_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let reporter = UsageReporter::new(
+            Some(dir.path().to_path_buf()),
+            "0.1.0-36",
+            Arc::new(NoTransport),
+            true,
+        );
+        let usage = UsageState::with_reporter(reporter.clone());
+        let app = tauri::test::mock_app();
+
+        usage.apply_previous_incident(
+            app.handle(),
+            Some((
+                Hang {
+                    stage: HangStage::AppExit,
+                    stalled_ms: Some(6000),
+                },
+                "launch-killed-1".to_string(),
+                "0.1.0-36".to_string(),
+            )),
+        );
+
+        let lines = reported_lines(&reporter);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0]["event"], "hang");
+        assert_eq!(lines[0]["launch_id"], "launch-killed-1");
+        assert!(
+            usage.pending_hang.lock().unwrap().is_none(),
+            "an already-on device has nothing left for a confirmation screen to ask about"
+        );
     }
 }

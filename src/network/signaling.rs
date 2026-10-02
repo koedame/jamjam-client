@@ -4,7 +4,6 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -13,23 +12,17 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use super::clock::{clock_skew_of_refusal, now_unix_secs};
 use super::device_identity::DeviceIdentity;
 use super::discovery::discover_signaling_url;
 use super::error::{NetworkError, SignalingFailure};
-
-/// Current Unix time in whole seconds, the timestamp a device identity signs
-/// when connecting.
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
+use super::link_facts::route_preference;
+use crate::telemetry::{AppStart, AudioEnv};
 
 /// The four `X-Device-*` handshake headers proving `identity` to a server
 /// (ADR-024), signed for the current time.
 pub(super) fn signed_device_headers(identity: &DeviceIdentity) -> [(&'static str, String); 4] {
-    let timestamp = now_unix_secs() as i64;
+    let timestamp = now_unix_secs();
     [
         (DEVICE_ID_HEADER, identity.device_id().to_string()),
         (DEVICE_PUBKEY_HEADER, identity.public_key_b64()),
@@ -78,10 +71,13 @@ pub struct AddressCandidate {
 impl AddressCandidate {
     /// Create a new host candidate
     pub fn host(address: SocketAddr) -> Self {
-        // Host candidates have high priority
+        // Host candidates have high priority. Among them the nearer route
+        // wins (LAN, then an overlay such as Tailscale, then the rest): every
+        // interface address used to tie, so the order a peer probed them in
+        // was whatever order the OS listed the interfaces in.
         // IPv6 gets slightly higher priority than IPv4 (Happy Eyeballs)
         let type_pref: u32 = 126; // Host type preference
-        let local_pref: u32 = if address.is_ipv6() { 65535 } else { 65534 };
+        let local_pref: u32 = route_preference(address) * 0x2000 + u32::from(address.is_ipv6());
         let priority = (type_pref << 24) | (local_pref << 8) | 255;
 
         Self {
@@ -156,6 +152,11 @@ impl PeerInfo {
             }
         }
 
+        // The app publishes its bind address (`0.0.0.0:port`) as `local_addr`.
+        // That names no host: macOS refuses the send (EHOSTUNREACH) and Linux
+        // delivers it to ourselves.
+        addrs.retain(|addr| !addr.ip().is_unspecified());
+
         addrs
     }
 }
@@ -168,8 +169,8 @@ pub struct RoomInfo {
     pub peer_count: usize,
     pub max_peers: usize,
     pub has_password: bool,
-    /// 6-character invite code for easy room sharing
-    pub invite_code: String,
+    /// Invite code for easy room sharing
+    pub invite_code: InviteCode,
     /// True for the room the server offers for trying a connection. The app
     /// shows a shortcut into it only when the server lists one, so which room
     /// that is - and whether there is one at all - is the server's to decide.
@@ -178,6 +179,80 @@ pub struct RoomInfo {
     /// a list with no such room.
     #[serde(default)]
     pub test_room: bool,
+}
+
+/// What the app tells the server about itself when it enters a room, for the
+/// people who run the service to read. The server keeps it with the seat and
+/// hands it to nobody else: it is not part of [`PeerInfo`], so the other
+/// participants never receive it, and this app never reads it back.
+///
+/// Built from what the usage log already collects ([`AppStart`], [`AudioEnv`]),
+/// so the display name and everything else [`crate::telemetry`] leaves out of
+/// the settings is left out here too.
+///
+/// The server refuses a message whose `client_info` is outside its definition,
+/// and a refused message is a room that cannot be entered, so every string is
+/// cut to the length the definition allows ([`ClientInfo::new`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClientInfo {
+    pub app_version: String,
+    pub os: String,
+    pub arch: String,
+    #[serde(flatten)]
+    pub machine: AppStart,
+    #[serde(flatten)]
+    pub audio: AudioEnv,
+}
+
+/// The longest an app version or an OS version may be.
+const MAX_VERSION_TEXT: usize = 32;
+/// The longest a language or a WebView version may be.
+const MAX_SHORT_TEXT: usize = 16;
+/// The longest a device name, a device ID or a settings value may be.
+const MAX_LONG_TEXT: usize = 128;
+/// The most items of the settings file the server takes.
+const MAX_SETTINGS: usize = 64;
+
+impl ClientInfo {
+    pub fn new(app_version: &str, mut machine: AppStart, mut audio: AudioEnv) -> Self {
+        for (text, max) in [
+            (&mut machine.os_version, MAX_VERSION_TEXT),
+            (&mut machine.webview_version, MAX_SHORT_TEXT),
+            (&mut machine.language, MAX_SHORT_TEXT),
+            (&mut audio.input_id, MAX_LONG_TEXT),
+            (&mut audio.output_id, MAX_LONG_TEXT),
+        ] {
+            if let Some(text) = text {
+                cut(text, max);
+            }
+        }
+        machine.settings = std::mem::take(&mut machine.settings)
+            .into_iter()
+            .filter(|(_, value)| {
+                !matches!(value, serde_json::Value::String(s) if s.chars().count() > MAX_LONG_TEXT)
+            })
+            .take(MAX_SETTINGS)
+            .collect();
+        for device in [&mut audio.input, &mut audio.output].into_iter().flatten() {
+            cut(&mut device.name, MAX_LONG_TEXT);
+        }
+        let mut app_version = app_version.to_string();
+        cut(&mut app_version, MAX_VERSION_TEXT);
+        Self {
+            app_version,
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            machine,
+            audio,
+        }
+    }
+}
+
+/// `text` shortened to at most `max` characters.
+fn cut(text: &mut String, max: usize) {
+    if let Some((end, _)) = text.char_indices().nth(max) {
+        text.truncate(end);
+    }
 }
 
 /// Signaling message types
@@ -193,6 +268,10 @@ pub enum SignalingMessage {
         /// in its [`PeerInfo`]. Left out when empty, as an older app does.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         features: Vec<String>,
+        /// What this app is, for the server's operators. Left out by an app
+        /// that has nothing to tell (the CLI). Never passed on to the others.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_info: Option<ClientInfo>,
     },
     JoinRoom {
         room_id: String,
@@ -201,6 +280,9 @@ pub enum SignalingMessage {
         /// As [`SignalingMessage::CreateRoom`]'s.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         features: Vec<String>,
+        /// As [`SignalingMessage::CreateRoom`]'s.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_info: Option<ClientInfo>,
     },
     LeaveRoom,
     /// Update peer connection information with multiple candidates
@@ -221,8 +303,8 @@ pub enum SignalingMessage {
     RoomCreated {
         room_id: String,
         peer_id: Uuid,
-        /// 6-character invite code for easy room sharing
-        invite_code: String,
+        /// Invite code for easy room sharing
+        invite_code: InviteCode,
     },
     RoomJoined {
         room_id: String,
@@ -234,8 +316,8 @@ pub enum SignalingMessage {
         /// Defaulted so a client still parses the reply from a server that
         /// predates this field; it then has no code to show, rather than
         /// failing the join outright.
-        #[serde(default)]
-        invite_code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite_code: Option<InviteCode>,
         peers: Vec<PeerInfo>,
     },
     PeerJoined {
@@ -252,18 +334,6 @@ pub enum SignalingMessage {
     },
     Error {
         message: String,
-    },
-    /// Sent to every peer in a room the server has closed. Each client should
-    /// treat this as an immediate disconnect.
-    RoomClosed {
-        reason: String,
-    },
-    /// Broadcast room-wide when the server removes one peer from the room;
-    /// only the client whose `peer_id` matches should disconnect, other
-    /// clients in the room should ignore it.
-    Kicked {
-        peer_id: Uuid,
-        reason: String,
     },
 
     // Chat messages
@@ -316,28 +386,89 @@ pub fn ensure_crypto_provider_installed() {
 /// Excludes visually confusing characters: 0, O, I, 1, L
 const INVITE_CODE_CHARS: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
-/// Length of invite codes
-const INVITE_CODE_LENGTH: usize = 6;
+/// Length of an invite code. Must differ from the 8-character room ID, which
+/// shares the join field with invite codes.
+const INVITE_CODE_LENGTH: usize = 9;
 
-/// Generate a 6-character invite code using readable characters.
-/// Uses characters A-H, J-N, P-Z, 2-9 (excludes 0, O, I, 1, L for readability).
-pub fn generate_invite_code() -> String {
-    use rand::RngExt;
-    let mut rng = rand::rng();
-    (0..INVITE_CODE_LENGTH)
-        .map(|_| {
-            let idx = rng.random_range(0..INVITE_CODE_CHARS.len());
-            INVITE_CODE_CHARS[idx] as char
-        })
-        .collect()
+/// A room's invite code: exactly [`INVITE_CODE_LENGTH`] upper-case characters
+/// from the invite alphabet. There is no other way to make one than
+/// [`InviteCode::generate`] or parsing, so a room cannot be given a code of
+/// another shape - not by the server, not by a deployment's setting for its
+/// own rooms.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct InviteCode(String);
+
+/// The text was not a well-formed invite code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidInviteCode;
+
+impl std::fmt::Display for InvalidInviteCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "not an invite code ({} characters from the invite alphabet)",
+            INVITE_CODE_LENGTH
+        )
+    }
 }
 
-/// Check if a string matches the invite code format (6 uppercase alphanumeric characters).
-pub fn is_invite_code_format(s: &str) -> bool {
-    s.len() == INVITE_CODE_LENGTH && s.chars().all(|c| INVITE_CODE_CHARS.contains(&(c as u8)))
+impl std::error::Error for InvalidInviteCode {}
+
+impl InviteCode {
+    /// Generate a code using readable characters.
+    /// Uses characters A-H, J-N, P-Z, 2-9 (excludes 0, O, I, 1, L for readability).
+    pub fn generate() -> Self {
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        Self(
+            (0..INVITE_CODE_LENGTH)
+                .map(|_| {
+                    let idx = rng.random_range(0..INVITE_CODE_CHARS.len());
+                    INVITE_CODE_CHARS[idx] as char
+                })
+                .collect(),
+        )
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// URL scheme used by invite links (`jamjam://join/ABC123`)
+impl std::str::FromStr for InviteCode {
+    type Err = InvalidInviteCode;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.len() == INVITE_CODE_LENGTH && s.bytes().all(|b| INVITE_CODE_CHARS.contains(&b)) {
+            Ok(Self(s.to_string()))
+        } else {
+            Err(InvalidInviteCode)
+        }
+    }
+}
+
+impl TryFrom<String> for InviteCode {
+    type Error = InvalidInviteCode;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl From<InviteCode> for String {
+    fn from(code: InviteCode) -> Self {
+        code.0
+    }
+}
+
+impl std::fmt::Display for InviteCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// URL scheme used by invite links (`jamjam://join/ABC234XYZ`)
 pub const INVITE_URL_SCHEME: &str = "jamjam";
 
 /// Path segment that identifies a join link
@@ -347,7 +478,7 @@ const INVITE_URL_PATH: &str = "join";
 ///
 /// ```
 /// use jamjam::network::invite_url;
-/// assert_eq!(invite_url("ABC234"), "jamjam://join/ABC234");
+/// assert_eq!(invite_url("ABC234XYZ"), "jamjam://join/ABC234XYZ");
 /// ```
 pub fn invite_url(invite_code: &str) -> String {
     format!(
@@ -359,7 +490,7 @@ pub fn invite_url(invite_code: &str) -> String {
 /// Extract the invite code from an invite URL (REQ-CON-103)
 ///
 /// Returns `None` unless the URL uses the `jamjam` scheme, names the `join`
-/// path, and carries a code that passes [`is_invite_code_format`]. Rejecting a
+/// path, and carries a code that parses as an [`InviteCode`]. Rejecting a
 /// malformed code here means the join attempt fails locally with a clear cause
 /// rather than as a "room not found" from the server.
 ///
@@ -368,15 +499,15 @@ pub fn invite_url(invite_code: &str) -> String {
 ///
 /// ```
 /// use jamjam::network::parse_invite_url;
-/// assert_eq!(parse_invite_url("jamjam://join/ABC234"), Some("ABC234".to_string()));
-/// assert_eq!(parse_invite_url("https://example.com/join/ABC234"), None);
+/// assert_eq!(parse_invite_url("jamjam://join/ABC234XYZ"), Some("ABC234XYZ".to_string()));
+/// assert_eq!(parse_invite_url("https://example.com/join/ABC234XYZ"), None);
 /// ```
 pub fn parse_invite_url(url: &str) -> Option<String> {
     let prefix = format!("{}://{}/", INVITE_URL_SCHEME, INVITE_URL_PATH);
     let rest = url.trim().strip_prefix(&prefix)?;
 
     // Tolerate a trailing slash or query string, but nothing further down a path:
-    // `jamjam://join/ABC234/extra` is not a code this function should guess at.
+    // `jamjam://join/ABC234XYZ/extra` is not a code this function should guess at.
     let code = rest
         .split(['?', '#'])
         .next()
@@ -387,7 +518,7 @@ pub fn parse_invite_url(url: &str) -> Option<String> {
     }
 
     let code = code.to_ascii_uppercase();
-    if is_invite_code_format(&code) {
+    if code.parse::<InviteCode>().is_ok() {
         Some(code)
     } else {
         None
@@ -437,6 +568,12 @@ impl SignalingClient {
         }
         let (ws_stream, _) = connect_async(request).await.map_err(|e| {
             use tokio_tungstenite::tungstenite::Error as WsError;
+            if let WsError::Http(response) = &e {
+                let date = response.headers().get("date").and_then(|v| v.to_str().ok());
+                if let Some(skew) = clock_skew_of_refusal(response.status().as_u16(), date) {
+                    return skew;
+                }
+            }
             let failure = match &e {
                 WsError::Http(response) => SignalingFailure::of_status(response.status().as_u16()),
                 WsError::Tls(_) => SignalingFailure::Tls,
@@ -650,9 +787,112 @@ pub fn candidates_to_addrs(candidates: &[AddressCandidate]) -> Vec<SocketAddr> {
 mod tests {
     use super::*;
 
+    /// A server on this machine whose clock reads `now - behind_secs`: it
+    /// answers the question of where its signaling is, and refuses the
+    /// WebSocket handshake with a 401 dated by that clock. Returns its URL.
+    async fn refusing_server(behind_secs: i64) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = [0u8; 2048];
+                let read = stream.read(&mut request).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..read]).to_lowercase();
+                let date = chrono::DateTime::from_timestamp(now_unix_secs() - behind_secs, 0)
+                    .unwrap()
+                    .format("%a, %d %b %Y %H:%M:%S GMT");
+                let response = if request.contains("upgrade: websocket") {
+                    format!(
+                        "HTTP/1.1 401 Unauthorized\r\nDate: {date}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                } else {
+                    let body = format!(r#"{{"url":"ws://{addr}/v1/signaling"}}"#);
+                    format!(
+                        "HTTP/1.1 200 OK\r\nDate: {date}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        format!("{}://{}", "http", addr)
+    }
+
+    async fn connect_error(server: &str) -> NetworkError {
+        SignalingClient::new(server, Arc::new(DeviceIdentity::generate()))
+            .connect()
+            .await
+            .err()
+            .expect("the server refuses the connection")
+    }
+
+    /// Verifies: REQ-IDT-009
+    #[tokio::test]
+    async fn when_the_clock_is_minutes_off_and_the_server_refuses_the_identity_the_error_is_the_clock_with_its_size(
+    ) {
+        let server = refusing_server(375).await;
+
+        let error = connect_error(&server).await;
+
+        assert!(
+            matches!(error, NetworkError::ClockSkew { offset_secs } if (374..=376).contains(&offset_secs)),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("ahead of the server's by 37"),
+            "{error}"
+        );
+    }
+
+    /// Verifies: REQ-IDT-009
+    #[tokio::test]
+    async fn when_the_clock_is_behind_and_the_server_refuses_the_identity_the_error_says_behind() {
+        let server = refusing_server(-900).await;
+
+        let error = connect_error(&server).await;
+
+        assert!(
+            matches!(error, NetworkError::ClockSkew { offset_secs } if (-901..=-899).contains(&offset_secs)),
+            "{error:?}"
+        );
+    }
+
+    /// Verifies: REQ-IDT-009
+    #[tokio::test]
+    async fn when_the_clock_is_right_and_the_server_refuses_the_identity_it_is_still_a_4xx() {
+        let server = refusing_server(0).await;
+
+        let error = connect_error(&server).await;
+
+        assert!(
+            matches!(
+                error,
+                NetworkError::SignalingUnreachable {
+                    failure: SignalingFailure::Http4xx,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// Verifies: REQ-IDT-009
+    #[tokio::test]
+    async fn when_asked_the_server_says_how_far_the_clock_is_from_its_own() {
+        let server = refusing_server(375).await;
+
+        let offset = super::super::discovery::server_clock_offset_secs(&server)
+            .await
+            .expect("the server dates its answer");
+
+        assert!((374..=376).contains(&offset), "{offset}");
+    }
+
     #[test]
     fn a_room_list_from_a_server_that_marks_no_test_room_parses_with_none_marked() {
-        let json = r#"{"type":"RoomList","data":{"rooms":[{"id":"r1","name":"Jam","peer_count":1,"max_peers":10,"has_password":false,"invite_code":"ABC234"}]}}"#;
+        let json = r#"{"type":"RoomList","data":{"rooms":[{"id":"r1","name":"Jam","peer_count":1,"max_peers":10,"has_password":false,"invite_code":"ABC234XYZ"}]}}"#;
 
         let SignalingMessage::RoomList { rooms } = serde_json::from_str(json).unwrap() else {
             panic!("not a RoomList");
@@ -662,13 +902,13 @@ mod tests {
 
     #[test]
     fn a_room_the_server_marks_as_its_test_room_parses_as_one() {
-        let json = r#"{"type":"RoomList","data":{"rooms":[{"id":"r1","name":"Test Room","peer_count":0,"max_peers":10,"has_password":false,"invite_code":"ABC234","test_room":true}]}}"#;
+        let json = r#"{"type":"RoomList","data":{"rooms":[{"id":"r1","name":"Test Room","peer_count":0,"max_peers":10,"has_password":false,"invite_code":"ABC234XYZ","test_room":true}]}}"#;
 
         let SignalingMessage::RoomList { rooms } = serde_json::from_str(json).unwrap() else {
             panic!("not a RoomList");
         };
         assert!(rooms[0].test_room);
-        assert_eq!(rooms[0].invite_code, "ABC234");
+        assert_eq!(rooms[0].invite_code.as_str(), "ABC234XYZ");
     }
 
     /// Verifies: REQ-CON-030
@@ -722,10 +962,11 @@ mod tests {
     #[test]
     fn an_app_that_announces_no_features_sends_no_features_field() {
         let json = serde_json::to_value(SignalingMessage::JoinRoom {
-            room_id: "ABC234".to_string(),
+            room_id: "ABC234XYZ".to_string(),
             password: None,
             peer_name: "Bob".to_string(),
             features: vec![],
+            client_info: None,
         })
         .unwrap();
         assert!(json["data"].get("features").is_none(), "{}", json);
@@ -735,11 +976,170 @@ mod tests {
             password: None,
             peer_name: "Alice".to_string(),
             features: vec![PEER_MESSAGE_FEATURE.to_string()],
+            client_info: None,
         })
         .unwrap();
         assert_eq!(
             json["data"]["features"],
             serde_json::json!(["peer_message"])
+        );
+    }
+
+    fn info_for_test() -> ClientInfo {
+        let mut settings = serde_json::Map::new();
+        settings.insert("preset".to_string(), serde_json::json!("ultra"));
+        settings.insert("buffer_size".to_string(), serde_json::json!(64));
+        ClientInfo::new(
+            "0.4.0-beta.2",
+            AppStart {
+                os_version: Some("14.6".to_string()),
+                cpu_cores: Some(12),
+                ram_gb: Some(32),
+                settings,
+                ..AppStart::default()
+            },
+            AudioEnv {
+                input: None,
+                output: None,
+                input_id: Some("alsa:mic".to_string()),
+                output_id: None,
+            },
+        )
+    }
+
+    /// The app's own information goes in the entering message beside the other
+    /// fields as a flat object, and an app with nothing to tell (the CLI) sends
+    /// no such field.
+    ///
+    /// Verifies: REQ-CON-032
+    #[test]
+    fn the_app_information_is_sent_in_the_entering_message_and_left_out_when_there_is_none() {
+        let json = serde_json::to_value(SignalingMessage::JoinRoom {
+            room_id: "ABC234XYZ".to_string(),
+            password: None,
+            peer_name: "Bob".to_string(),
+            features: vec![],
+            client_info: Some(info_for_test()),
+        })
+        .unwrap();
+        let info = &json["data"]["client_info"];
+        assert_eq!(info["app_version"], "0.4.0-beta.2");
+        assert_eq!(info["os"], std::env::consts::OS);
+        assert_eq!(info["os_version"], "14.6");
+        assert_eq!(info["cpu_cores"], 12);
+        assert_eq!(info["settings"]["preset"], "ultra");
+        assert_eq!(info["input"], serde_json::Value::Null);
+        assert_eq!(info["input_id"], "alsa:mic");
+        assert!(info.get("output_id").is_none(), "{}", info);
+
+        let json = serde_json::to_value(SignalingMessage::CreateRoom {
+            room_name: "Jam".to_string(),
+            password: None,
+            peer_name: "Alice".to_string(),
+            features: vec![],
+            client_info: None,
+        })
+        .unwrap();
+        assert!(json["data"].get("client_info").is_none(), "{}", json);
+    }
+
+    /// The server refuses a message whose information is outside its
+    /// definition, and then the room cannot be entered. What the app cannot
+    /// control the length of is cut to what the definition allows.
+    ///
+    /// Verifies: REQ-CON-032
+    #[test]
+    fn app_information_with_text_longer_than_the_server_accepts_is_cut_to_the_limit() {
+        let long = "x".repeat(300);
+        let mut settings = serde_json::Map::new();
+        settings.insert("server_url".to_string(), serde_json::json!(long));
+        settings.insert("preset".to_string(), serde_json::json!("ultra"));
+        for i in 0..80 {
+            settings.insert(format!("item_{i:02}"), serde_json::json!(i));
+        }
+        let info = ClientInfo::new(
+            &long,
+            AppStart {
+                os_version: Some(long.clone()),
+                language: Some(long.clone()),
+                webview_version: Some(long.clone()),
+                settings,
+                ..AppStart::default()
+            },
+            AudioEnv {
+                input: Some(crate::telemetry::Device {
+                    name: "あ".repeat(300),
+                    kind: crate::telemetry::DeviceKind::Usb,
+                    channels: 2,
+                    sample_rates: vec![48000],
+                    min_buffer_frames: None,
+                    is_default: false,
+                }),
+                output: None,
+                input_id: Some(long.clone()),
+                output_id: Some(long.clone()),
+            },
+        );
+
+        assert_eq!(info.app_version.chars().count(), 32);
+        assert_eq!(
+            info.machine.os_version.as_ref().unwrap().chars().count(),
+            32
+        );
+        assert_eq!(info.machine.language.as_ref().unwrap().chars().count(), 16);
+        assert_eq!(
+            info.machine
+                .webview_version
+                .as_ref()
+                .unwrap()
+                .chars()
+                .count(),
+            16
+        );
+        assert_eq!(info.audio.input.as_ref().unwrap().name.chars().count(), 128);
+        assert_eq!(info.audio.input_id.as_ref().unwrap().chars().count(), 128);
+        assert_eq!(info.audio.output_id.as_ref().unwrap().chars().count(), 128);
+        assert!(info.machine.settings.len() <= 64);
+        assert!(
+            !info.machine.settings.contains_key("server_url"),
+            "a settings value longer than the definition allows is left out, not cut"
+        );
+    }
+
+    /// What the server hands to the other participants has no place for the
+    /// app's information, so it cannot reach another app through it.
+    ///
+    /// Verifies: REQ-CON-032
+    #[test]
+    fn a_participant_as_the_others_receive_it_has_no_app_information() {
+        let peer = PeerInfo {
+            id: Uuid::nil(),
+            name: "Alice".to_string(),
+            candidates: vec![],
+            public_addr: None,
+            local_addr: None,
+            joined_at: 0,
+            features: vec![],
+        };
+        let mut keys: Vec<String> = serde_json::to_value(&peer)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "candidates",
+                "features",
+                "id",
+                "joined_at",
+                "local_addr",
+                "name",
+                "public_addr"
+            ]
         );
     }
 
@@ -822,6 +1222,7 @@ mod tests {
             password: None,
             peer_name: "Alice".to_string(),
             features: vec![],
+            client_info: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -845,10 +1246,10 @@ mod tests {
     /// Verifies: REQ-CON-021
     #[test]
     fn test_generate_invite_code_length() {
-        let code = generate_invite_code();
-        assert_eq!(code.len(), INVITE_CODE_LENGTH);
+        let code = InviteCode::generate();
+        assert_eq!(code.as_str().len(), INVITE_CODE_LENGTH);
         assert!(
-            is_invite_code_format(&code),
+            code.as_str().parse::<InviteCode>().is_ok(),
             "{:?} fails the format check",
             code
         );
@@ -858,8 +1259,8 @@ mod tests {
     fn test_generate_invite_code_valid_chars() {
         // Generate multiple codes to test character validity
         for _ in 0..100 {
-            let code = generate_invite_code();
-            for c in code.chars() {
+            let code = InviteCode::generate();
+            for c in code.as_str().chars() {
                 assert!(
                     INVITE_CODE_CHARS.contains(&(c as u8)),
                     "Invalid character '{}' in invite code",
@@ -874,10 +1275,10 @@ mod tests {
         // Generate many codes and verify excluded characters never appear
         let excluded_chars = ['0', 'O', 'I', '1', 'L'];
         for _ in 0..1000 {
-            let code = generate_invite_code();
+            let code = InviteCode::generate();
             for c in excluded_chars {
                 assert!(
-                    !code.contains(c),
+                    !code.as_str().contains(c),
                     "Invite code '{}' contains excluded character '{}'",
                     code,
                     c
@@ -894,43 +1295,67 @@ mod tests {
         use std::collections::HashSet;
         let mut codes = HashSet::new();
         for _ in 0..100 {
-            let code = generate_invite_code();
+            let code = InviteCode::generate();
             codes.insert(code);
         }
-        // With 29^6 possible codes (~594M), 100 codes should all be unique
+        // With 31^9 possible codes (~2.6e13), 100 codes should all be unique
         assert_eq!(codes.len(), 100);
     }
 
-    #[test]
-    fn test_is_invite_code_format_valid() {
-        assert!(is_invite_code_format("ABC234"));
-        assert!(is_invite_code_format("HJKMNP"));
-        assert!(is_invite_code_format("QRSTUV"));
-        assert!(is_invite_code_format("WXY789"));
+    fn is_code(s: &str) -> bool {
+        s.parse::<InviteCode>().is_ok()
     }
 
     #[test]
-    fn test_is_invite_code_format_invalid_length() {
-        assert!(!is_invite_code_format("ABC23")); // Too short
-        assert!(!is_invite_code_format("ABC2345")); // Too long
-        assert!(!is_invite_code_format("")); // Empty
+    fn test_an_invite_code_of_nine_alphabet_characters_parses() {
+        assert!(is_code("ABC234XYZ"));
+        assert!(is_code("HJKMNPQRS"));
+        assert!(is_code("TUVWXY789"));
+    }
+
+    /// Verifies: REQ-CON-021
+    #[test]
+    fn test_an_invite_code_of_six_characters_does_not_parse() {
+        assert!(!is_code("HJK567"));
+        assert!(!is_code("ABC234"));
+        assert!(!is_code("HJKMNP"));
     }
 
     #[test]
-    fn test_is_invite_code_format_invalid_chars() {
-        assert!(!is_invite_code_format("ABC230")); // Contains '0'
-        assert!(!is_invite_code_format("ABCDE1")); // Contains '1'
-        assert!(!is_invite_code_format("ABCDEO")); // Contains 'O'
-        assert!(!is_invite_code_format("ABCDEI")); // Contains 'I'
-        assert!(!is_invite_code_format("ABCDEL")); // Contains 'L'
-        assert!(!is_invite_code_format("abc234")); // Lowercase
+    fn test_an_invite_code_of_any_other_length_does_not_parse() {
+        assert!(!is_code("ABC23")); // Too short
+        assert!(!is_code("ABC2345")); // Between six and nine
+        assert!(!is_code("ABC234XY")); // 8 characters is a room ID
+        assert!(!is_code("ABC234XYZ2")); // Too long
+        assert!(!is_code("")); // Empty
     }
 
     #[test]
-    fn test_is_invite_code_format_uuid_like_strings() {
-        // UUID-like strings should not match invite code format
-        assert!(!is_invite_code_format("a1b2c3d4")); // 8-char UUID prefix
-        assert!(!is_invite_code_format("a1b2c3d4-e5f6"));
+    fn test_an_invite_code_with_a_character_outside_the_alphabet_does_not_parse() {
+        assert!(!is_code("ABC234XY0")); // Contains '0'
+        assert!(!is_code("ABCDEFGH1")); // Contains '1'
+        assert!(!is_code("ABCDEFGHO")); // Contains 'O'
+        assert!(!is_code("ABCDEFGHI")); // Contains 'I'
+        assert!(!is_code("ABCDEFGHL")); // Contains 'L'
+        assert!(!is_code("abc234xyz")); // Lowercase
+    }
+
+    #[test]
+    fn test_uuid_like_strings_do_not_parse_as_an_invite_code() {
+        assert!(!is_code("a1b2c3d4")); // 8-char UUID prefix
+        assert!(!is_code("a1b2c3d4-e5f6"));
+    }
+
+    #[test]
+    fn test_a_room_message_with_a_six_character_code_is_refused() {
+        let json = r#"{"type":"RoomCreated","data":{"room_id":"r1","peer_id":"00000000-0000-0000-0000-000000000001","invite_code":"HJK567"}}"#;
+        assert!(serde_json::from_str::<SignalingMessage>(json).is_err());
+    }
+
+    #[test]
+    fn test_an_invite_code_serializes_as_its_text() {
+        let code: InviteCode = "ABC234XYZ".parse().unwrap();
+        assert_eq!(serde_json::to_string(&code).unwrap(), "\"ABC234XYZ\"");
     }
 
     #[test]
@@ -968,7 +1393,7 @@ mod tests {
     fn test_address_candidate_priority_ordering() {
         // Host candidates should have higher priority than server reflexive
         let host_v4 = AddressCandidate::host("192.168.1.100:5000".parse().unwrap());
-        let host_v6 = AddressCandidate::host("[2001:db8::1]:5000".parse().unwrap());
+        let host_v6 = AddressCandidate::host("[fd00::1]:5000".parse().unwrap());
         let srflx_v4 = AddressCandidate::server_reflexive("203.0.113.50:5000".parse().unwrap());
         let srflx_v6 = AddressCandidate::server_reflexive("[2001:db8::2]:5000".parse().unwrap());
 
@@ -979,6 +1404,46 @@ mod tests {
         // IPv6 slightly higher than IPv4 within same type
         assert!(host_v6.priority > host_v4.priority);
         assert!(srflx_v6.priority > srflx_v4.priority);
+    }
+
+    /// Verifies: REQ-CON-115
+    #[test]
+    fn when_the_interfaces_are_listed_overlay_first_the_lan_candidate_is_still_probed_first() {
+        let mut peer = PeerInfo {
+            id: Uuid::nil(),
+            name: "peer".into(),
+            candidates: vec![
+                AddressCandidate::host("100.98.128.5:5000".parse().unwrap()),
+                AddressCandidate::host("203.0.113.9:5000".parse().unwrap()),
+                AddressCandidate::host("192.168.1.20:5000".parse().unwrap()),
+                AddressCandidate::server_reflexive("203.0.113.50:5000".parse().unwrap()),
+            ],
+            public_addr: None,
+            local_addr: None,
+            joined_at: 0,
+            features: Vec::new(),
+        };
+
+        let order: Vec<String> = peer
+            .get_sorted_candidates()
+            .iter()
+            .map(|a| a.ip().to_string())
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "192.168.1.20",
+                "100.98.128.5",
+                "203.0.113.9",
+                "203.0.113.50"
+            ]
+        );
+
+        peer.candidates.reverse();
+        assert_eq!(
+            peer.get_sorted_candidates()[0].ip().to_string(),
+            "192.168.1.20"
+        );
     }
 
     #[test]

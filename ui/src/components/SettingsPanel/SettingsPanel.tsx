@@ -11,10 +11,10 @@ import { VerticalTabs, Tab } from "./VerticalTabs";
 import { GeneralTab, Language } from "./tabs/GeneralTab";
 import { ProfileTab } from "./tabs/ProfileTab";
 import { DevicesTab, DeviceInfo } from "./tabs/DevicesTab";
-import { DiagnosticsTab, DiagnosticsState } from "./tabs/DiagnosticsTab";
+import { DiagnosticsTab, DiagnosticsState, ReportProblemState } from "./tabs/DiagnosticsTab";
 import { SelectOption } from "./Select";
 import { MicIcon, SlidersIcon, UserIcon, ActivityIcon } from "./icons";
-import { CompleteDiagnosticsResult, RecommendedPreset } from "../../lib/tauri";
+import { CompleteDiagnosticsResult, Hang, RecommendedPreset } from "../../lib/tauri";
 import "./SettingsPanel.css";
 
 export type SettingsTabId = "devices" | "general" | "profile" | "diagnostics";
@@ -112,6 +112,14 @@ export interface SettingsPanelProps {
   logFolder?: string | null;
   /** Why the folder could not be opened */
   logFolderError?: string | null;
+  /** A hang found at startup while usage reporting is off; null/undefined = nothing to ask about */
+  previousHang?: Hang | null;
+  /** Answers the pending hang report */
+  onSendPreviousHang?: (send: boolean) => void;
+  /** Set once the pending hang report has been answered */
+  previousHangAnswered?: boolean;
+  /** Whether "send" also attaches jamjam.log (ADR-059: true before 1.0.0) */
+  previousHangAttachesLog?: boolean;
   /** Whether usage reporting is on */
   usageReporting?: boolean;
   /** Turn usage reporting on or off */
@@ -122,6 +130,16 @@ export interface SettingsPanelProps {
   onShowUsagePreview?: () => void;
   /** Why what would be sent could not be read */
   usagePreviewError?: string | null;
+  /** "Report a problem" (ADR-058) */
+  reportProblemState?: ReportProblemState;
+  reportProblemPreview?: string | null;
+  reportProblemComment?: string;
+  reportProblemError?: string | null;
+  /** Starts the flow (loads the preview). Renders the section while set. */
+  onOpenReportProblem?: () => void;
+  onReportProblemCommentChange?: (value: string) => void;
+  onSendReportProblem?: () => void;
+  onCancelReportProblem?: () => void;
 }
 
 const DEFAULT_CHANNEL_OPTIONS: SelectOption[] = [
@@ -189,11 +207,23 @@ export function SettingsPanel({
   onOpenLogFolder,
   logFolder,
   logFolderError,
+  previousHang,
+  onSendPreviousHang,
+  previousHangAnswered,
+  previousHangAttachesLog,
   usageReporting,
   onUsageReportingChange,
   usagePreview,
   onShowUsagePreview,
   usagePreviewError,
+  reportProblemState,
+  reportProblemPreview,
+  reportProblemComment,
+  reportProblemError,
+  onOpenReportProblem,
+  onReportProblemCommentChange,
+  onSendReportProblem,
+  onCancelReportProblem,
 }: SettingsPanelProps) {
   const { t } = useTranslation();
   const [selectedTab, setSelectedTab] = useState<SettingsTabId>(initialTab);
@@ -273,11 +303,23 @@ export function SettingsPanel({
             onOpenLogFolder={onOpenLogFolder}
             logFolder={logFolder}
             logFolderError={logFolderError}
+            previousHang={previousHang}
+            onSendPreviousHang={onSendPreviousHang}
+            previousHangAnswered={previousHangAnswered}
+            previousHangAttachesLog={previousHangAttachesLog}
             usageReporting={usageReporting}
             onUsageReportingChange={onUsageReportingChange}
             usagePreview={usagePreview}
             onShowUsagePreview={onShowUsagePreview}
             usagePreviewError={usagePreviewError}
+            reportProblemState={reportProblemState}
+            reportProblemPreview={reportProblemPreview}
+            reportProblemComment={reportProblemComment}
+            reportProblemError={reportProblemError}
+            onOpenReportProblem={onOpenReportProblem}
+            onReportProblemCommentChange={onReportProblemCommentChange}
+            onSendReportProblem={onSendReportProblem}
+            onCancelReportProblem={onCancelReportProblem}
           />
         );
       default:

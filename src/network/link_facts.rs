@@ -61,6 +61,32 @@ impl LinkRoute {
     }
 }
 
+/// [`route_preference`] of the best kind of route: nothing can beat it.
+pub(super) const NEAREST_ROUTE_PREFERENCE: u32 = 3;
+
+/// How good a route to `addr` is expected to be, the higher the better: inside
+/// a local network (3), through an overlay network such as Tailscale (2), any
+/// other address (1). A peer on the same LAN is a hop away; an overlay adds an
+/// encrypted tunnel on top of the same wire; a public address crosses the NAT.
+pub(super) fn route_preference(addr: SocketAddr) -> u32 {
+    if is_overlay(addr.ip()) {
+        return 2;
+    }
+    match LinkRoute::of(addr) {
+        LinkRoute::Lan | LinkRoute::Loopback => NEAREST_ROUTE_PREFERENCE,
+        LinkRoute::Public => 1,
+    }
+}
+
+/// Whether `ip` is in the range Tailscale hands out: 100.64.0.0/10 (the
+/// carrier-grade NAT space) or fd7a:115c:a1e0::/48.
+fn is_overlay(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 0x40,
+        IpAddr::V6(ip) => ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
+}
+
 /// What has been learned about the link so far. A value that has not been
 /// measured yet is `None`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -117,6 +143,14 @@ impl LinkFacts {
         );
         self.first_audio_ms.store(NOT_MEASURED, Ordering::Relaxed);
         *self.up_at.lock().unwrap() = Some(now);
+    }
+
+    /// The route moved to `addr` after the link went up. Nothing has answered
+    /// there yet, and the connect time and first audio stay as they were.
+    pub(crate) fn route_moved(&self, addr: SocketAddr) {
+        self.route
+            .store(LinkRoute::of(addr).to_u8(), Ordering::Relaxed);
+        self.route_confirmed.store(false, Ordering::Relaxed);
     }
 
     /// An audio packet arrived. Only the first one since the link went up counts.
@@ -187,6 +221,32 @@ mod tests {
         assert_eq!(LinkRoute::of(addr("[::1]:5000")), LinkRoute::Loopback);
     }
 
+    /// Verifies: REQ-CON-115
+    #[test]
+    fn when_the_address_is_on_the_lan_it_is_preferred_to_an_overlay_and_to_a_public_one() {
+        let lan = route_preference(addr("192.168.1.20:5000"));
+        let overlay = route_preference(addr("100.68.50.7:5000"));
+        let public = route_preference(addr("203.0.113.7:5000"));
+
+        assert!(lan > overlay, "{lan} > {overlay}");
+        assert!(overlay > public, "{overlay} > {public}");
+    }
+
+    /// Verifies: REQ-CON-115
+    #[test]
+    fn when_the_address_is_in_the_tailscale_range_it_is_an_overlay_in_both_families() {
+        for text in [
+            "100.64.0.1:5000",
+            "100.127.255.254:5000",
+            "[fd7a:115c:a1e0::1]:5000",
+        ] {
+            assert_eq!(route_preference(addr(text)), 2, "{text}");
+        }
+        for text in ["100.63.255.255:5000", "100.128.0.1:5000", "[fd00::1]:5000"] {
+            assert_ne!(route_preference(addr(text)), 2, "{text}");
+        }
+    }
+
     #[test]
     fn when_nothing_has_connected_the_snapshot_is_empty() {
         assert!(LinkFacts::new().snapshot().is_empty());
@@ -202,6 +262,20 @@ mod tests {
         assert_eq!(snapshot.route_confirmed, Some(true));
         assert!(snapshot.connect_ms.is_some());
         assert_eq!(snapshot.first_audio_ms, None);
+    }
+
+    #[test]
+    fn when_the_route_moves_the_route_changes_and_connect_time_stays() {
+        let facts = LinkFacts::new();
+        facts.link_up(addr("192.168.1.20:5000"), true, Instant::now());
+        let connect_ms = facts.snapshot().connect_ms;
+
+        facts.route_moved(addr("203.0.113.7:5000"));
+
+        let snapshot = facts.snapshot();
+        assert_eq!(snapshot.route, Some(LinkRoute::Public));
+        assert_eq!(snapshot.route_confirmed, Some(false));
+        assert_eq!(snapshot.connect_ms, connect_ms);
     }
 
     #[test]

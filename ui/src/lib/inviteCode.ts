@@ -10,8 +10,8 @@
 /** Characters used by invite codes. Excludes 0, O, I, 1, L as confusable. */
 export const INVITE_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
-/** Invite codes are exactly this long. */
-export const INVITE_CODE_LENGTH = 6;
+/** Invite codes are exactly this long. Must differ from the 8-character room ID, which shares the join field. */
+export const INVITE_CODE_LENGTH = 9;
 
 /** Whether `code` is a well-formed invite code, regardless of case. */
 export function isValidInviteCode(code: string): boolean {

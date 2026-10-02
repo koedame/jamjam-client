@@ -48,7 +48,7 @@ function inRoom(): SessionSnapshot {
     error: null,
     room: {
       room_id: 'room-1',
-      invite_code: 'ABC234',
+      invite_code: 'ABC234XYZ',
       peer_id: 'bo-id',
       peer_name: 'Bo',
       participants: [{ id: 'aki-id', name: 'Aki', features: ['peer_message'] }],
@@ -107,7 +107,7 @@ beforeEach(() => {
         return result;
       }
       case 'streaming_status':
-        return { is_active: false };
+        return { is_active: false, device_problems: [] };
       case 'config_get_sample_rate':
         return 48000;
       case 'config_get_transmit_channels':
@@ -130,7 +130,7 @@ describe('HelperScreen', () => {
     expect(await screen.findByTestId('settings-help-window-banner')).toHaveTextContent(
       "You are working in Bo's app."
     );
-    expect(await screen.findByTestId('room-code')).toHaveTextContent('ABC234');
+    expect(await screen.findByTestId('room-code')).toHaveTextContent('ABC234XYZ');
     expect(await screen.findByTestId('participant-list')).toHaveTextContent('Aki');
   });
 
@@ -140,7 +140,7 @@ describe('HelperScreen', () => {
     await screen.findByTestId('room-code');
 
     expect(askedOf('session_get')).toHaveLength(1);
-    expect(askedOf('streaming_status').length).toBeGreaterThan(0);
+    await waitFor(() => expect(askedOf('streaming_status').length).toBeGreaterThan(0));
     // The window's own business is answered here; nothing else is.
     expect(own.filter((cmd) => cmd !== 'help_call' && cmd !== 'help_window_info')).toEqual([]);
   });
@@ -155,7 +155,6 @@ describe('HelperScreen', () => {
     expect(screen.queryByRole('textbox', { name: /message/i })).not.toBeInTheDocument();
     const methods = asked.map((c) => c.method);
     for (const forbidden of [
-      'config_get_connection_history',
       'config_get_effective_server_url',
       'signaling_send_chat',
       'session_leave',
@@ -245,7 +244,7 @@ describe('HelperScreen', () => {
       });
       expect(askedOf('streaming_status')).toHaveLength(1);
 
-      answer({ is_active: false });
+      answer({ is_active: false, device_problems: [] });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(300);
       });

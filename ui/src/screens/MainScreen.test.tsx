@@ -12,7 +12,7 @@ import { act, render, screen, waitFor, fireEvent, within } from '@testing-librar
 
 import i18n from '../i18n';
 import { MainScreen } from './MainScreen';
-import type { MixerSnapshot, SessionSnapshot } from '../lib/tauri';
+import type { AudioEncryption, DeviceProblem, MixerSnapshot, SessionSnapshot } from '../lib/tauri';
 
 const invoke = vi.hoisted(() => vi.fn());
 /** What the screen listens for, by event name. */
@@ -58,7 +58,7 @@ function inRoom(changes: Partial<SessionSnapshot> = {}): SessionSnapshot {
     phase: 'connected',
     room: {
       room_id: 'room-1',
-      invite_code: 'ABC234',
+      invite_code: 'ABC234XYZ',
       peer_id: 'me',
       peer_name: 'Me',
       participants: [{ id: 'b', name: 'Aki', features: ['peer_message'] }],
@@ -71,6 +71,10 @@ function inRoom(changes: Partial<SessionSnapshot> = {}): SessionSnapshot {
 let current: SessionSnapshot | Promise<SessionSnapshot>;
 /** Where the backend says the faders stand, for `mixer_get`. */
 let mixerNow: MixerSnapshot;
+/** The devices the backend says it could not open, for `streaming_status`. */
+let statusDeviceProblems: DeviceProblem[];
+/** Whether the backend says the audio to the peer is encrypted, for `streaming_status`; `null` while no session runs. */
+let statusEncryption: AudioEncryption | null;
 /** Commands the screen sent to the backend, in order, with their arguments. */
 let calls: Array<{ cmd: string; args: Record<string, unknown> | undefined }>;
 
@@ -98,6 +102,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   calls = [];
+  statusDeviceProblems = [];
+  statusEncryption = null;
   current = snapshot();
   mixerNow = faders();
   openUrl.handler = null;
@@ -111,9 +117,23 @@ beforeEach(() => {
       case 'mixer_get':
         return mixerNow;
       case 'streaming_status':
-        return { is_active: false };
-      case 'config_get_connection_history':
-        return [];
+        if (statusEncryption) {
+          return {
+            is_active: true,
+            device_problems: statusDeviceProblems,
+            network: { encryption: statusEncryption, bandwidth_status: 'sufficient', required_bps: 0 },
+            latency: null,
+            audio_quality: null,
+            peer_audio: null,
+            connection_state: 'connected',
+            connection_error: null,
+            is_muted: false,
+            is_monitoring: false,
+            input_level: 0,
+            output_level: 0,
+          };
+        }
+        return { is_active: false, device_problems: statusDeviceProblems };
       case 'config_get_sample_rate':
         return 48000;
       case 'config_get_transmit_channels':
@@ -149,15 +169,15 @@ describe('MainScreen の接続の表示', () => {
     render(<MainScreen />);
 
     fireEvent.change(await screen.findByTestId('connection-panel-invite-code'), {
-      target: { value: 'ABC234' },
+      target: { value: 'ABC234XYZ' },
     });
     fireEvent.click(screen.getByTestId('connection-panel-join'));
 
-    expect(callsTo('session_join').map((c) => c.args)).toEqual([{ code: 'ABC234' }]);
+    expect(callsTo('session_join').map((c) => c.args)).toEqual([{ code: 'ABC234XYZ' }]);
   });
 
   it('サーバーがテストルームを示しているとき、そのコードへのショートカットを出すこと', async () => {
-    current = snapshot({ test_room_invite_code: 'TEST22' });
+    current = snapshot({ test_room_invite_code: 'HJK567MNP' });
 
     render(<MainScreen />);
 
@@ -203,7 +223,7 @@ describe('MainScreen のルームの表示', () => {
 
     announce(inRoom({ revision: 2 }));
 
-    expect(await screen.findByTestId('room-code')).toHaveTextContent('ABC234');
+    expect(await screen.findByTestId('room-code')).toHaveTextContent('ABC234XYZ');
     expect(screen.getByTestId('participant-list')).toHaveTextContent('Aki');
     expect(screen.getByTestId('participant-list')).toHaveTextContent('Me');
   });
@@ -278,6 +298,90 @@ describe('MainScreen のルームの表示', () => {
 
     expect(callsTo('session_reconnect')).toHaveLength(1);
     expect(screen.getByText(/no route to host/)).toBeInTheDocument();
+  });
+});
+
+describe('MainScreen の暗号化の表示', () => {
+  /** Verifies: REQ-SEC-006 */
+  it('相手のアプリが暗号化できないとき、この相手との音声は暗号化されていないと知らせること', async () => {
+    current = inRoom();
+    statusEncryption = 'unencrypted';
+
+    render(<MainScreen />);
+
+    expect(await screen.findByText(/Audio with this peer is not encrypted/)).toBeInTheDocument();
+  });
+
+  it('相手との音声が暗号化されているとき、暗号化についての知らせは出さないこと', async () => {
+    current = inRoom();
+    statusEncryption = 'encrypted';
+
+    render(<MainScreen />);
+
+    await waitFor(() => expect(callsTo('streaming_status').length).toBeGreaterThan(0));
+    expect(screen.queryByText(/not encrypted/)).not.toBeInTheDocument();
+  });
+
+  it('鍵を合わせている最中のとき、暗号化されていないとは知らせないこと', async () => {
+    current = inRoom();
+    statusEncryption = 'negotiating';
+
+    render(<MainScreen />);
+
+    await waitFor(() => expect(callsTo('streaming_status').length).toBeGreaterThan(0));
+    expect(screen.queryByText(/not encrypted/)).not.toBeInTheDocument();
+  });
+});
+
+describe('MainScreen のデバイスの問題の表示', () => {
+  /** Verifies: REQ-AUD-123 */
+  it('入力デバイスが応答しないとき、セッションが始まっていなくても、その名前を添えて知らせること', async () => {
+    current = inRoom();
+    statusDeviceProblems = [{ side: 'input', trouble: 'unresponsive', device: 'AG06/AG03', sample_rate: 48000 }];
+
+    render(<MainScreen />);
+
+    const message = await screen.findByText(/Input device isn't responding/);
+    expect(message).toHaveTextContent('(AG06/AG03)');
+  });
+
+  /** Verifies: REQ-AUD-123 */
+  it('出力デバイスを開けなかったとき、名前が分からなくても、出力の問題として知らせること', async () => {
+    current = inRoom();
+    statusDeviceProblems = [{ side: 'output', trouble: 'failed', device: null, sample_rate: 48000 }];
+
+    render(<MainScreen />);
+
+    expect(await screen.findByText(/Couldn't open the output device/)).toBeInTheDocument();
+  });
+
+  /** Verifies: REQ-AUD-125 */
+  it('入力デバイスが 48000Hz で開けないとき、デバイスの名前とレートを添えて、形式を合わせるよう知らせること', async () => {
+    current = inRoom();
+    statusDeviceProblems = [
+      { side: 'input', trouble: 'unsupported_format', device: 'USB AUDIO CODEC', sample_rate: 48000 },
+    ];
+
+    render(<MainScreen />);
+
+    const message = await screen.findByText(/Couldn't open the input device/);
+    expect(message).toHaveTextContent(
+      "Couldn't open the input device (USB AUDIO CODEC) at 48000 Hz. In your sound settings, set this device's format to 48000 Hz"
+    );
+  });
+
+  /** Verifies: REQ-AUD-123 */
+  it('デバイスの問題が解けたとき、知らせが消えること', async () => {
+    current = inRoom();
+    statusDeviceProblems = [{ side: 'input', trouble: 'unresponsive', device: null, sample_rate: 48000 }];
+    render(<MainScreen />);
+    await screen.findByText(/Input device isn't responding/);
+
+    statusDeviceProblems = [];
+
+    await waitFor(() =>
+      expect(screen.queryByText(/Input device isn't responding/)).not.toBeInTheDocument()
+    );
   });
 });
 
@@ -384,9 +488,9 @@ describe('MainScreen の招待リンク', () => {
   it('招待リンクが届いたとき、そのコードで session_join を呼ぶこと', async () => {
     await withConnection();
 
-    act(() => openUrl.handler!(['jamjam://join/abc234']));
+    act(() => openUrl.handler!(['jamjam://join/abc234xyz']));
 
-    expect(callsTo('session_join').map((c) => c.args)).toEqual([{ code: 'ABC234' }]);
+    expect(callsTo('session_join').map((c) => c.args)).toEqual([{ code: 'ABC234XYZ' }]);
   });
 
   it('コードが壊れた招待リンクが届いたとき、エラーを出して参加しないこと', async () => {

@@ -1,8 +1,3 @@
----
-sidebar_label: Usage Reporting
-sidebar_position: 8
----
-
 <!-- このドキュメントは実装の正です。変更時は実装も同期すること -->
 
 # Usage Reporting Specification（利用状況の送信）
@@ -22,7 +17,7 @@ sidebar_position: 8
 | `v` | スキーマの版（1） |
 | `ts` | UTC、ISO 8601、秒まで |
 | `seq` | 起動内の通し番号 |
-| `event` | 下の 6 つのどれか |
+| `event` | 下の 7 つのどれか |
 | `install_id` | オンにしたときに作る 16 バイトの乱数（hex） |
 | `launch_id` | 起動ごとの 16 バイトの乱数 |
 | `session_id` | セッションごとの乱数。セッション外は `null` |
@@ -36,6 +31,7 @@ sidebar_position: 8
 | `session_end` | 部屋を出たとき | `duration_s` `end_reason` `reconnect_count` `peers_max` `xrun_count`、測れたものだけ `rtt_ms_p50` `rtt_ms_p95` `loss_pct_mean` `loss_pct_max` `fec_active_pct`、経路（`route` `route_confirmed` `connect_ms` `first_audio_ms`）、自分のアドレス（`local_ips` `public_ip`）。下の「経路とアドレス」 |
 | `error` | エラーが起きたとき | `component` `code`（どちらも固定の列挙）`count`。メッセージ本文は送らない。`code` には、相手が黙って接続を諦めた `no_packets`、シグナリングサーバーに繋がらなかった理由の `http_4xx` `http_5xx` `tls` `dns` `timeout`、サーバー側から閉じられた `ws_closed` がある（REQ-TEL-017） |
 | `crash` | クラッシュした次の起動時 | `file` `line` `function`。パニックのメッセージ本文は送らない |
+| `hang` | 正常終了しなかった次の起動時 | `stage`（`app_exit` / `restart` / `update_apply` / `device_open` / `unknown`。固定の列挙）、見張っていた区間なら `stalled_ms`（上限を超えるまでの経過ミリ秒） |
 
 - `event` / `code` / `end_reason` / `kind` は列挙で閉じている。定義に無い項目・値の行は `schema.json` に適合しない
 - 自由な文字列を持つ項目は、デバイスの `name`（OS が返す名前のまま。REQ-TEL-005）と `settings` の値だけ
@@ -51,12 +47,11 @@ sidebar_position: 8
 
 ### 設定（`settings`）
 
-設定ファイルの項目を**丸ごと**入れる。送る項目の一覧は持たないので、項目が増えれば勝手に送られる。外すのは次の 4 項目だけ（REQ-TEL-004）。
+設定ファイルの項目を**丸ごと**入れる。送る項目の一覧は持たないので、項目が増えれば勝手に送られる。外すのは次の 3 項目だけ（REQ-TEL-004）。
 
 | 外す項目 | 理由 |
 |----------|------|
 | `peer_name` | 表示名 |
-| `connection_history` | 入った部屋の履歴 |
 | `input_device_id` / `output_device_id` | 送らないのではなく、`audio_env` の `input_id` / `output_id` で送る。デバイスの選び直しが、設定の変更と `audio_env` の 2 行に割れないようにするため |
 
 `server_url`（自前サーバーの URL）は、スキーム・ホスト・ポートだけにして送る。ユーザー名・パスワード（認証情報）・パス・クエリ・フラグメントは、秘密が入りうるので落とす。ホストが読み取れない値は送らない。選んだデバイスの ID は `audio_env` にそのまま入れる（REQ-TEL-005）。
@@ -99,6 +94,18 @@ sequenceDiagram
 
 パニックのフックが、オンの間だけ発生位置（ファイル名・行・関数名）を専用ディレクトリの `crash.json` に書く。落ちる瞬間はネットワークを使わないので、次の起動が読んで `crash` として送り、ファイルを消す（REQ-TEL-008）。`crash` 行の `launch_id` と `app_version` は落ちた起動のもの。パニックのメッセージ本文は、保存も送信もしない。ファイル名は、絶対パスなら名前だけにする（利用者のホームディレクトリの名前を含むため）。
 
+## 固まりの検知（`hang`。[ADR-056](../adr/ADR-056-hang-detection-and-reporting.md)）
+
+主スレッドの終了処理・再起動・更新の適用・音声デバイスを開く処理（見張りのガードを差し込んであるのは今のところ終了処理と再起動の 2 つ）を、それぞれ自分の上限時間（例: 終了処理 5 秒）で見張る（`src-tauri/src/watchdog.rs`）。上限を超えたら、区間名と経過時間を専用ディレクトリの `hang.json` に書く。見張っている区間が無いまま前回の起動が正常終了しなかった（強制終了・電源断など）ときも、起動時に書く「動いている」印（`running.json`）が消えていないことから同じ形で拾い、区間名は `unknown`・経過時間は無しにする（REQ-TEL-019）。
+
+**この記録は `usage_reporting` の設定を見ずに、常にローカルへ書く。** クラッシュと違い、固まりに気づくこと自体は同意を要らないものとし、送るかどうかだけを同意にかける。
+
+- `usage_reporting` がオンなら、次の起動でクラッシュと同じように自動で `hang` として送る（`UsageReporter::record_previous_hang`）。**アプリの版が 1.0.0 未満の間は、この自動送信にも現在の `jamjam.log` を追加で送る**（確認は挟まない。REQ-TEL-023・[ADR-060](../adr/ADR-060-hang-report-attaches-the-log-while-reporting-is-already-on.md)）
+- `usage_reporting` がオフのときは記録を保持し（`UsageReporter::previous_hang`）、Diagnostics タブの案内から「送る」を選んだときだけ、送信のためだけに作って送信後に必ず捨てるインストール ID でこの 1 件を送る（`UsageReporter::send_one_off_hang`。`usage_reporting` 自体はオンにならない。REQ-TEL-020）。「送らない」を選べば記録はそのまま捨てる
+- **アプリの版が 1.0.0 未満のときは、「送る」を選ぶと現在の `jamjam.log` も追加で送る**（`src-tauri/src/usage.rs` の `attaches_log`。ADR-058「問題を報告」と同じ送り先・同じ本文の作り方を再利用する。REQ-TEL-021・[ADR-059](../adr/ADR-059-hang-report-attaches-the-log-before-1-0-0.md)）。1.0.0 以上ではこの追加送信をしない
+- どちらの経路も送るコメントに区間名と起動 ID を機械的に埋めるので、利用ログ側の `hang` 行の `launch_id` と突き合わせられる
+- **確認していない記録は、再起動をまたいでも残る。** `usage_reporting` がオフの間、まだ確認していない記録は `pending_hang.json` にも書く（`watchdog::save_pending_hang` / `read_pending_hang` / `clear_pending_hang`）。再起動（自動更新の適用を含む）は通常の `RunEvent::Exit` を経て `running.json` を消すので、次の起動が見るのはその再起動自身の痕跡だけになるが、`pending_hang.json` は確認が済む（Diagnostics タブが答えを送る）かオンの状態で自動送信されるまで残る（REQ-TEL-022）
+
 ## 送る内容を見る
 
 `UsageReporter::preview_ndjson()`（アプリでは Tauri コマンド `usage_preview`）が、次の送信の本文をそのまま返す（REQ-TEL-009）。待っているイベントが無いときは、最後に送った本文を返す。オフのときは空文字。
@@ -137,6 +144,8 @@ sequenceDiagram
 
 `jamjam.log`（[ADR-036](../adr/ADR-036-diagnostic-log-file.md)）は端末の中に留まる。この仕組みとは別経路で、そのマスク処理も使わない。外に出てよいものは `schema.json` と `LEFT_OUT` だけで決まる。
 
+`jamjam.log` を利用者が手動で送る「問題を報告」（[ADR-058](../adr/ADR-058-report-a-problem.md)）は、この仕組みとも別の第 3 の経路で、`usage_reporting` の設定を読まず・変えない。詳細は ADR-058。
+
 ## Public API（`jamjam::telemetry`）
 
 | 項目 | 内容 |
@@ -146,6 +155,8 @@ sequenceDiagram
 | `record(EventBody)` / `record_error(component, code)` | イベントを記録する（オフなら何もしない） |
 | `begin_session(mode)` / `with_session(..)` / `end_session(reason)` | セッションとその集計 |
 | `report_previous_crash()` / `install_panic_hook()` | クラッシュの保存と、次の起動での送信 |
+| `write_hang(stage, stalled_ms)` | 固まり・正常終了しなかったことをローカルに書く（`usage_reporting` を見ない） |
+| `previous_hang()` / `record_previous_hang(hang, launch_id, app_version)` / `send_one_off_hang(hang, launch_id, app_version).await` | 前回の固まりの記録を読む・自動で記録する・1 件だけ単独で送る |
 | `flush().await` | 待っている分を 1 回送る |
 | `preview_ndjson()` | 送る予定の本文 |
 | `Transport` / `HttpTransport` | 送り先。テストでは差し替える |

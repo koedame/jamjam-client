@@ -163,11 +163,6 @@ app_commands! {
     [Access::ALL] "プリセットの一覧を読む" crate::config::config_list_presets;
     [Access::ALL] "プリセットの内容を読む" crate::config::config_get_preset;
     // The rooms a person has been in is personal.
-    [Access::NO_HELP] "入ったことのあるルームの履歴を読む" crate::config::config_get_connection_history;
-    [Access::NO_HELP] "入ったことのあるルームの履歴に足す" crate::config::config_add_connection_history;
-    [Access::NO_HELP] "入ったことのあるルームの履歴から消す" crate::config::config_remove_connection_history;
-    [Access::NO_HELP] "入ったことのあるルームの履歴を全部消す" crate::config::config_clear_connection_history;
-    [Access::NO_HELP] "入ったことのあるルームの履歴の名前を変える" crate::config::config_update_connection_history_label;
     [Access::ALL] "自分の表示名を読む" crate::config::config_get_peer_name;
     [Access::ALL] "自分の表示名を変える" crate::config::config_set_peer_name;
     [Access::ALL] "サンプルレートの設定を読む" crate::config::config_get_sample_rate;
@@ -196,6 +191,14 @@ app_commands! {
     [Access::NO_HELP] "画面のログを診断ログに書く" crate::logging::log_frontend;
     [Access::NO_HELP] "診断ログのフォルダを開く" crate::logging::log_open_dir;
     [Access::ALL] "利用状況として送る内容の見本を読む" crate::usage::usage_preview;
+    [Access::ALL] "前回終了できなかった記録が残っているかを読む" crate::usage::usage_previous_hang;
+    [Access::ALL] "その記録を送るとき診断ログも添えるかを読む" crate::usage::usage_previous_hang_attaches_log;
+    // Consent to send this one report is the person's own, like the toggle.
+    [Access::NO_HELP] "前回終了できなかった記録を送る・捨てる" crate::usage::usage_send_previous_hang;
+    // The log can carry a room ID and other participants' identifiers (ADR-036),
+    // which a helper may not read (see the fixed "できない操作" text below).
+    [Access::NO_HELP] "問題の報告として送る診断ログの見本を読む" crate::report_problem::report_problem_preview;
+    [Access::NO_HELP] "問題を報告する（診断ログとコメントを送る）" crate::report_problem::report_problem_send;
 
     // The screen's own answer to a call a portal started (see `webview`).
     [Access::SCREEN_ONLY] "遠隔の呼び出しの結果を返す" crate::rpc::rpc_settle;
@@ -233,7 +236,7 @@ mod tests {
 手伝いは、手伝われる人が申し出に**初めに 1 回**許可すると始まる。許可のあとは、手伝う人の手元に相手のアプリと同じ画面が
 別のウィンドウで開き、そこでの操作が相手のアプリに届く。1 つ 1 つの操作は聞かれない。かわりに、届いた操作を相手のアプリが
 1 件ずつ、この表で判定する。表に無い操作は呼べない。手伝いは、手伝われる人がいつでも止められる。止める・どちらかが退室する・
-接続が切れる・ルームが閉じるのどれかで終わり、アプリを起動し直しても続かない。
+接続が切れるのどれかで終わり、アプリを起動し直しても続かない。
 
 手伝いのあいだ、手伝われる人の画面には、手伝っている人の名前と「止める」が出続ける。ルームのチャットには、手伝いの開始と終了、
 音声の設定の変更が記録される（ミュートや音量の変更は記録されない）。
@@ -250,7 +253,7 @@ mod tests {
     const MIDDLE: &str = "
 ## できない操作
 
-チャットの送信・リアクション、退室とルームの移動、接続先と利用状況の送信の設定、入ったことのあるルームの履歴、
+チャットの送信・リアクション、退室とルームの移動、接続先と利用状況の送信の設定、
 ウィンドウの操作、ほかの人への手伝いの申し出は、手伝う人にはできない。診断ログや画面を読み書きする操作は、
 この手伝いには無い。
 
@@ -372,7 +375,6 @@ mod tests {
             "session_reconnect",
             "config_set_server_url",
             "config_set_usage_reporting",
-            "config_get_connection_history",
             "settings_help_request",
             "settings_help_answer",
             "settings_help_stop",
@@ -438,6 +440,8 @@ mod tests {
             "streaming_set_mute",
             "streaming_status",
             "usage_preview",
+            "usage_previous_hang",
+            "usage_previous_hang_attaches_log",
         ];
         assert_eq!(open, expected);
     }

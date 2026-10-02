@@ -238,6 +238,11 @@
   box-shadow: var(--shadow-focus);
 }
 
+.diagnostics-tab__usage-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
 .diagnostics-tab__usage-lines {
   align-self: stretch;
   max-height: 240px;
@@ -253,6 +258,39 @@
   white-space: pre-wrap;
   word-break: break-all;
   user-select: text;
+}
+
+/* ===== Report a problem section ===== */
+.diagnostics-tab__comment {
+  align-self: stretch;
+  min-height: 72px;
+  padding: var(--space-sm) var(--space-md);
+  background-color: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-caption);
+  resize: vertical;
+}
+
+.diagnostics-tab__comment:hover:not(:disabled) {
+  border-color: var(--color-border-hover);
+}
+
+.diagnostics-tab__comment:focus {
+  border-color: var(--color-border-focus);
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+.diagnostics-tab__comment:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diagnostics-tab__comment::placeholder {
+  color: var(--color-text-tertiary);
 }
 
 /* Result card */
